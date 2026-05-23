@@ -638,7 +638,7 @@ fun GatewayScreen(
                     }
                 }
             } else {
-                items(logs) { log ->
+                items(logs, key = { it.id }) { log ->
                     LogItemRow(log = log, surfaceColor = surfaceCardColor)
                 }
             }

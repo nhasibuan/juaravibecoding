@@ -19,17 +19,33 @@ object OpenAiToGeminiTranslator {
         for (i in 0 until messages.length()) {
             val msg = messages.getJSONObject(i)
             val role = msg.optString("role", "user")
-            val content = msg.optString("content", "")
+            
+            var contentText = ""
+            val contentObj = msg.opt("content")
+            if (contentObj is String) {
+                contentText = contentObj
+            } else if (contentObj is JSONArray) {
+                val sb = StringBuilder()
+                for (j in 0 until contentObj.length()) {
+                    val subObj = contentObj.optJSONObject(j)
+                    if (subObj != null) {
+                        if (subObj.optString("type") == "text") {
+                            sb.append(subObj.optString("text"))
+                        }
+                    }
+                }
+                contentText = sb.toString()
+            }
 
             if (role == "system") {
-                systemInstructionText = content
+                systemInstructionText = contentText
                 continue
             }
 
             // Map OpenAI assistant role to Gemini model role
             val geminiRole = if (role == "assistant") "model" else "user"
 
-            val partObj = JSONObject().put("text", content)
+            val partObj = JSONObject().put("text", contentText)
             val partsArr = JSONArray().put(partObj)
 
             val contentItem = JSONObject()
@@ -141,8 +157,22 @@ object OpenAiToGeminiTranslator {
         val messages = openAiObj.optJSONArray("messages") ?: JSONArray()
         var userPrompt = "Hello!"
         if (messages.length() > 0) {
-            val lastMsg = messages.getJSONObject(messages.length() - 1)
-            userPrompt = lastMsg.optString("content", "Hello!")
+            val lastMsg = messages.optJSONObject(messages.length() - 1)
+            if (lastMsg != null) {
+                val contentObj = lastMsg.opt("content")
+                if (contentObj is String) {
+                    userPrompt = contentObj
+                } else if (contentObj is JSONArray) {
+                    val sb = StringBuilder()
+                    for (k in 0 until contentObj.length()) {
+                        val item = contentObj.optJSONObject(k)
+                        if (item != null && item.optString("type") == "text") {
+                            sb.append(item.optString("text"))
+                        }
+                    }
+                    userPrompt = sb.toString()
+                }
+            }
         }
 
         val chatCmplId = "chatcmpl-" + UUID.randomUUID().toString().replace("-", "").take(24)

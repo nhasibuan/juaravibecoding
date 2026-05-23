@@ -26,7 +26,10 @@ class ProxyServerManager(
     private val repository: GatewayRepository
 ) {
     private var serverSocket: ServerSocket? = null
-    private val serverScope = CoroutineScope(Dispatchers.IO)
+    private val exceptionHandler = CoroutineExceptionHandler { _, exception ->
+        Log.e("ProxyServerManager", "Unhandled coroutine exception in ProxyServerManager", exception)
+    }
+    private val serverScope = CoroutineScope(Dispatchers.IO + SupervisorJob() + exceptionHandler)
     private val serverMutex = Mutex()
 
     private val okHttpClient = OkHttpClient.Builder()
@@ -47,12 +50,12 @@ class ProxyServerManager(
 
     fun getLocalIp(): String {
         try {
-            val interfaces = java.net.NetworkInterface.getNetworkInterfaces()
+            val interfaces = java.net.NetworkInterface.getNetworkInterfaces() ?: return "127.0.0.1"
             while (interfaces.hasMoreElements()) {
-                val networkInterface = interfaces.nextElement()
-                val addresses = networkInterface.inetAddresses
+                val networkInterface = interfaces.nextElement() ?: continue
+                val addresses = networkInterface.inetAddresses ?: continue
                 while (addresses.hasMoreElements()) {
-                    val address = addresses.nextElement()
+                    val address = addresses.nextElement() ?: continue
                     if (!address.isLoopbackAddress && address is java.net.Inet4Address) {
                         val host = address.hostAddress
                         if (host != null && !host.startsWith("127.")) {
@@ -76,7 +79,9 @@ class ProxyServerManager(
                 if (_isServerRunning.value) return@withLock
 
                 try {
-                    val sSocket = ServerSocket(port)
+                    val sSocket = ServerSocket()
+                    sSocket.reuseAddress = true
+                    sSocket.bind(java.net.InetSocketAddress(port))
                     serverSocket = sSocket
                     _isServerRunning.value = true
                     Log.d("ProxyServerManager", "Socket Server started successfully on port $port")
@@ -87,14 +92,25 @@ class ProxyServerManager(
                             while (isRunningLoop) {
                                 val clientSocket = try {
                                     sSocket.accept()
-                                } catch (e: Exception) {
+                                } catch (e: Throwable) {
                                     // socket closed or stopped
                                     break
                                 }
                                 launch {
-                                    handleClient(clientSocket)
+                                    try {
+                                        handleClient(clientSocket)
+                                    } catch (e: Throwable) {
+                                        Log.e("ProxyServerManager", "Exception handling client socket connection", e)
+                                        try {
+                                            clientSocket.close()
+                                        } catch (closeEx: Throwable) {
+                                            // Ignore close exception
+                                        }
+                                    }
                                 }
                             }
+                        } catch (e: Throwable) {
+                            Log.e("ProxyServerManager", "Exception in server accept loop", e)
                         } finally {
                             serverMutex.withLock {
                                 _isServerRunning.value = false
@@ -104,7 +120,7 @@ class ProxyServerManager(
                             }
                         }
                     }
-                } catch (e: Exception) {
+                } catch (e: Throwable) {
                     Log.e("ProxyServerManager", "Failed to start socket server on port $port", e)
                     _isServerRunning.value = false
                     isRunningLoop = false
@@ -178,14 +194,23 @@ class ProxyServerManager(
                     var contentLength = 0
                     var authorizationHeader = ""
                     var line: String? = reader.readLine()
+                    var contentTooLarge = false
                     while (line != null && line.isNotEmpty()) {
                         val lowercaseLine = line.lowercase(Locale.US)
                         if (lowercaseLine.startsWith("content-length:")) {
                             contentLength = line.substring("content-length:".length).trim().toIntOrNull() ?: 0
+                            if (contentLength > 10 * 1024 * 1024) { // 10MB Limit
+                                contentTooLarge = true
+                            }
                         } else if (lowercaseLine.startsWith("authorization:")) {
                             authorizationHeader = line.substring("authorization:".length).trim()
                         }
                         line = reader.readLine()
+                    }
+
+                    if (contentTooLarge) {
+                        sendErrorResponse(outputStream, 413, "Content Too Large: Maximum supported content body size is 10MB")
+                        return@withContext
                     }
 
                     // 3. Handle OPTIONS (CORS preflight)
@@ -194,15 +219,56 @@ class ProxyServerManager(
                         return@withContext
                     }
 
-                    // 4. Validate Endpoint path and request method
-                    if (method != "POST" || path != "/v1/chat/completions") {
-                        val errorResponse = "{\"error\": {\"message\": \"Gateway only proxies POST /v1/chat/completions requests\", \"type\": \"invalid_request_error\"}}"
+                    val startTime = System.currentTimeMillis()
+
+                    // 4. Validate Endpoint path and request method with resilient cleaning
+                    val normalizedPath = if (path.contains("://")) {
+                        try {
+                            java.net.URL(path).path
+                        } catch (e: Exception) {
+                            path.substringAfter("://").substringAfter("/", "")
+                        }
+                    } else {
+                        path
+                    }
+                    val cleanPath = "/" + normalizedPath.substringBefore("?").trim { it == '/' }
+
+                    val isChatEndpoint = method == "POST" && (
+                        cleanPath.contains("/chat/completions") || 
+                        cleanPath == "/chat/completions" || 
+                        cleanPath == "/v1" || 
+                        cleanPath == "/"
+                    )
+                    val isModelsEndpoint = method == "GET" && (
+                        cleanPath.contains("/models") || 
+                        cleanPath == "/v1" || 
+                        cleanPath == "/"
+                    )
+
+                    if (!isChatEndpoint && !isModelsEndpoint) {
+                        val duration = System.currentTimeMillis() - startTime
+                        val errorResponse = "{\"error\": {\"message\": \"Gateway only proxies POST /v1/chat/completions and GET /v1/models requests. Received Path: $path (Cleaned: $cleanPath)\", \"type\": \"invalid_request_error\"}}"
                         sendJsonResponse(outputStream, 404, errorResponse)
+                        try {
+                            repository.insertLog(
+                                GatewayLog(
+                                    method = method,
+                                    path = path,
+                                    requestModel = "Unsupported Endpoint",
+                                    clientIp = clientIp,
+                                    status = 404,
+                                    durationMs = duration,
+                                    responsePreview = "Rejected: Method=$method, Path=$path, Cleaned=$cleanPath",
+                                    isAuthorized = true
+                                )
+                            )
+                        } catch (dbEx: Exception) {
+                            Log.e("ProxyServerManager", "DB logging failed for 404 endpoint", dbEx)
+                        }
                         return@withContext
                     }
 
-                    val startTime = System.currentTimeMillis()
-                    var requestModel = "unknown-model"
+                    var requestModel = if (isModelsEndpoint) "GET Models" else "unknown-model"
                     var httpStatus = 200
                     var outputResponseText = ""
                     var authorized = true
@@ -241,7 +307,64 @@ class ProxyServerManager(
                             }
                         }
 
-                        // 2. Read exact body from Reader using Content-Length
+                        // 2. Handle GET Models request
+                        if (isModelsEndpoint) {
+                            val modelsList = org.json.JSONArray()
+                            com.example.data.ModelsRegistry.allowedModels.forEach { model ->
+                                val mObj = org.json.JSONObject()
+                                    .put("id", model.modelId)
+                                    .put("object", "model")
+                                    .put("created", 1710000000)
+                                    .put("owned_by", "gateway")
+                                modelsList.put(mObj)
+                            }
+
+                            // Add standard models for ultimate compatibility
+                            val standardModels = listOf(
+                                "gemini-2.5-flash",
+                                "gemini-2.5-pro",
+                                "gpt-3.5-turbo",
+                                "gpt-4o",
+                                "gpt-4",
+                                "deepseek-reasoner"
+                            )
+                            standardModels.forEach { id ->
+                                val mObj = org.json.JSONObject()
+                                    .put("id", id)
+                                    .put("object", "model")
+                                    .put("created", 1710000000)
+                                    .put("owned_by", "upstream")
+                                modelsList.put(mObj)
+                            }
+
+                            val responseObj = org.json.JSONObject()
+                                .put("object", "list")
+                                .put("data", modelsList)
+
+                            outputResponseText = responseObj.toString()
+                            sendJsonResponse(outputStream, 200, outputResponseText)
+
+                            val duration = System.currentTimeMillis() - startTime
+                            try {
+                                repository.insertLog(
+                                    GatewayLog(
+                                        method = method,
+                                        path = path,
+                                        requestModel = "GET Models",
+                                        clientIp = clientIp,
+                                        status = 200,
+                                        durationMs = duration,
+                                        responsePreview = "Loaded ${modelsList.length()} models",
+                                        isAuthorized = true
+                                    )
+                                )
+                            } catch (dbEx: Exception) {
+                                Log.e("ProxyServerManager", "DB logging failed for models endpoint", dbEx)
+                            }
+                            return@withContext
+                        }
+
+                        // 3. Read exact body from Reader using Content-Length
                         val rawBody = if (contentLength > 0) {
                             val bodyBuffer = CharArray(contentLength)
                             var bytesRead = 0
@@ -346,16 +469,16 @@ class ProxyServerManager(
                                     isAuthorized = authorized
                                 )
                             )
-                        } catch (dbEx: Exception) {
+                        } catch (dbEx: Throwable) {
                             Log.e("ProxyServerManager", "DB logging failed for successful gateway run", dbEx)
                         }
 
-                    } catch (ex: Exception) {
+                    } catch (ex: Throwable) {
                         Log.e("ProxyServerManager", "Fatal handle exception error", ex)
                         val errJson = "{\"error\": {\"message\": \"Gateway failure: ${ex.localizedMessage}\", \"type\": \"gateway_error\"}}"
                         try {
                             sendJsonResponse(outputStream, 500, errJson)
-                        } catch (writeEx: Exception) {
+                        } catch (writeEx: Throwable) {
                             Log.e("ProxyServerManager", "Failed to write exception JSON to client socket", writeEx)
                         }
 
@@ -373,12 +496,12 @@ class ProxyServerManager(
                                     isAuthorized = authorized
                                 )
                             )
-                        } catch (dbEx: Exception) {
+                        } catch (dbEx: Throwable) {
                             Log.e("ProxyServerManager", "DB logging failed in catch block of handleClient", dbEx)
                         }
                     }
                 }
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 Log.e("ProxyServerManager", "Error in socket communication client worker", e)
             }
         }
