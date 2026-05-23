@@ -1,5 +1,11 @@
 package com.example.data
 
+// LiteRT-LM SDK API structures for default model configuration
+data class EngineConfig(
+    val modelPath: String,
+    val backend: Any? = null
+)
+
 data class LocalModelInfo(
     val name: String,
     val modelId: String,
@@ -13,9 +19,36 @@ data class LocalModelInfo(
     val llmSupportImage: Boolean = false,
     val llmSupportAudio: Boolean = false,
     val accelerators: String = "cpu,gpu"
-)
+) {
+    val targetFilePath: String
+        get() {
+            if (runtimeType != "litert-lm") return "system-managed"
+            if (modelId == "litert-community/gemma-4-E2B-it-litert-lm") {
+                return "/sdcard/Android/data/com.google.ai.edge.gallery/files/Gemma_4_E2B_it/20260325/gemma4_2b_v09_obfus_fix_all_modalities_thinking.litertlm"
+            }
+            if (modelId == "litert-community/gemma-4-E4B-it-litert-lm") {
+                return "/sdcard/Android/data/com.google.ai.edge.gallery/files/Gemma_4_E4B_it/20260325/gemma4_4b_v09_obfus_fix_all_modalities_thinking.litertlm"
+            }
+            val uriStr = url
+            if (uriStr.isNotEmpty()) {
+                val parts = uriStr.split("/android/")
+                if (parts.size > 1) {
+                    return "/sdcard/Android/data/com.google.ai.edge.gallery/files/" + parts[1]
+                }
+            }
+            return "/sdcard/Android/data/com.google.ai.edge.gallery/files/$modelFile"
+        }
+}
 
 object ModelsRegistry {
+    // Default LiteRT-LM Model Path on Android Storage:
+    // Resolves to: \Internal shared storage\Android\data\com.google.ai.edge.gallery\files\Gemma_4_E2B_it\20260325\gemma4_2b_v09_obfus_fix_all_modalities_thinking.litertlm
+    // on user devices (e.g., ADVAN SKETSA 3 via MTP USB connection).
+    const val DEFAULT_LITERT_MODEL_PATH = "/sdcard/Android/data/com.google.ai.edge.gallery/files/Gemma_4_E2B_it/20260325/gemma4_2b_v09_obfus_fix_all_modalities_thinking.litertlm"
+
+    // Default configuration for the LiteRT-LM engine
+    val defaultEngineConfig = EngineConfig(modelPath = DEFAULT_LITERT_MODEL_PATH)
+
     val allowedModels = listOf(
         LocalModelInfo(
             name = "Gemma 4 E2B (Gemini Nano via AICore)",

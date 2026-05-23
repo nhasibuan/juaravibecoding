@@ -53,6 +53,8 @@ fun GatewayScreen(
     val isRunning by viewModel.isServerRunning.collectAsStateWithLifecycle()
     val activePort by viewModel.serverPort.collectAsStateWithLifecycle()
     val serverIp by viewModel.serverIp.collectAsStateWithLifecycle()
+    val downloadProgress by viewModel.downloadProgress.collectAsStateWithLifecycle()
+    val downloadStatus by viewModel.downloadStatus.collectAsStateWithLifecycle()
 
     // Temporary states to allow comfortable key-in
     var portValue by remember { mutableStateOf("8080") }
@@ -466,12 +468,47 @@ fun GatewayScreen(
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Text(
-                                        text = model.name,
-                                        fontSize = 14.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = if (isCurrentlySelected) accentCyan else Color.White
-                                    )
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        RadioButton(
+                                            selected = isCurrentlySelected,
+                                            onClick = {
+                                                viewModel.changeActiveModel(model.modelId)
+                                                Toast.makeText(context, "Selected ${model.name}", Toast.LENGTH_SHORT).show()
+                                            },
+                                            colors = RadioButtonDefaults.colors(
+                                                selectedColor = accentCyan,
+                                                unselectedColor = Color.LightGray
+                                            ),
+                                            modifier = Modifier.padding(end = 4.dp)
+                                        )
+                                        Column {
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                Text(
+                                                    text = model.name,
+                                                    fontSize = 14.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = if (isCurrentlySelected) accentCyan else Color.White
+                                                )
+                                                if (model.modelId == "litert-community/gemma-4-E2B-it-litert-lm") {
+                                                    Spacer(modifier = Modifier.width(6.dp))
+                                                    Badge(
+                                                        containerColor = accentCyan.copy(alpha = 0.2f),
+                                                        contentColor = accentCyan
+                                                    ) {
+                                                        Text(
+                                                            text = "★ DEFAULT",
+                                                            fontSize = 8.sp,
+                                                            fontWeight = FontWeight.Bold,
+                                                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
 
                                     if (isCurrentlySelected) {
                                         Icon(
@@ -534,7 +571,149 @@ fun GatewayScreen(
                                     }
                                 }
 
-                                if (model.url.isNotEmpty()) {
+                                if (model.runtimeType == "litert-lm") {
+                                    val localFile = remember(model.targetFilePath, downloadStatus[model.modelId]) { java.io.File(model.targetFilePath) }
+                                    val isDownloaded = localFile.exists() && localFile.length() > 0
+                                    val status = downloadStatus[model.modelId] ?: "idle"
+                                    val progress = downloadProgress[model.modelId] ?: 0f
+
+                                    Spacer(modifier = Modifier.height(10.dp))
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .background(Color.Black.copy(alpha = 0.25f), shape = RoundedCornerShape(8.dp))
+                                            .border(1.dp, Color.LightGray.copy(alpha = 0.1f), RoundedCornerShape(8.dp))
+                                            .padding(10.dp)
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Text(
+                                                    text = "📂 STORAGE TARGET PATH:",
+                                                    fontSize = 9.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = accentCyan
+                                                )
+                                                Spacer(modifier = Modifier.height(2.dp))
+                                                Text(
+                                                    text = model.targetFilePath,
+                                                    fontSize = 9.sp,
+                                                    fontFamily = FontFamily.Monospace,
+                                                    color = Color.LightGray.copy(alpha = 0.8f),
+                                                    maxLines = 2,
+                                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                                                )
+                                            }
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            TextButton(
+                                                onClick = {
+                                                    clipboardManager.setText(AnnotatedString(model.targetFilePath))
+                                                    Toast.makeText(context, "Copied storage path!", Toast.LENGTH_SHORT).show()
+                                                },
+                                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                                            ) {
+                                                Text("COPY PATH", fontSize = 8.sp, fontWeight = FontWeight.Bold, color = accentCyan)
+                                            }
+                                        }
+
+                                        Spacer(modifier = Modifier.height(8.dp))
+
+                                        if (status == "downloading") {
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Text(
+                                                    text = "Downloading... ${(progress * 100).toInt()}%",
+                                                    fontSize = 11.sp,
+                                                    fontWeight = FontWeight.Medium,
+                                                    color = accentCyan
+                                                )
+                                            }
+                                            Spacer(modifier = Modifier.height(6.dp))
+                                            LinearProgressIndicator(
+                                                progress = { progress },
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .height(6.dp),
+                                                color = accentCyan,
+                                                trackColor = Color.White.copy(alpha = 0.1f),
+                                                strokeCap = androidx.compose.ui.graphics.StrokeCap.Round
+                                            )
+                                        } else {
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                                    Icon(
+                                                        imageVector = if (isDownloaded) Icons.Default.CheckCircle else Icons.Default.Info,
+                                                        contentDescription = "Status",
+                                                        tint = if (isDownloaded) accentGreen else Color.LightGray,
+                                                        modifier = Modifier.size(14.dp)
+                                                    )
+                                                    Spacer(modifier = Modifier.width(4.dp))
+                                                    Text(
+                                                        text = if (isDownloaded) "DOWNLOADED & READY" else "NOT DOWNLOADED",
+                                                        fontSize = 10.sp,
+                                                        fontWeight = FontWeight.Bold,
+                                                        color = if (isDownloaded) accentGreen else Color.LightGray
+                                                    )
+                                                }
+
+                                                if (model.url.isNotEmpty()) {
+                                                    Button(
+                                                        onClick = {
+                                                            viewModel.downloadModel(model)
+                                                            Toast.makeText(context, "Started downloading ${model.name}...", Toast.LENGTH_SHORT).show()
+                                                        },
+                                                        colors = ButtonDefaults.buttonColors(
+                                                            containerColor = if (isDownloaded) Color.DarkGray else accentCyan,
+                                                            contentColor = Color.White
+                                                        ),
+                                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                                        shape = RoundedCornerShape(6.dp),
+                                                        modifier = Modifier.height(28.dp)
+                                                    ) {
+                                                        Icon(
+                                                            imageVector = Icons.Default.ArrowDropDown,
+                                                            contentDescription = "Download icon",
+                                                            modifier = Modifier.size(12.dp)
+                                                        )
+                                                        Spacer(modifier = Modifier.width(4.dp))
+                                                        Text(
+                                                            text = if (isDownloaded) "RE-DOWNLOAD" else "DOWNLOAD FILE",
+                                                            fontSize = 9.sp,
+                                                            fontWeight = FontWeight.Bold
+                                                        )
+                                                    }
+                                                } else {
+                                                    Badge(
+                                                        containerColor = Color.DarkGray,
+                                                        contentColor = Color.LightGray
+                                                    ) {
+                                                        Text("LOCAL ONLY", fontSize = 8.sp, modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp))
+                                                    }
+                                                }
+                                            }
+
+                                            if (status.startsWith("failed")) {
+                                                Spacer(modifier = Modifier.height(4.dp))
+                                                Text(
+                                                    text = "Download Failed: ${status.substringAfter("failed: ")}",
+                                                    fontSize = 10.sp,
+                                                    color = accentRed,
+                                                    fontWeight = FontWeight.Bold
+                                                )
+                                            }
+                                        }
+                                    }
+                                } else if (model.url.isNotEmpty()) {
                                     Spacer(modifier = Modifier.height(10.dp))
                                     Row(
                                         modifier = Modifier

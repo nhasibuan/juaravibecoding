@@ -128,12 +128,7 @@ class GatewayViewModel(application: Application) : AndroidViewModel(application)
                 val wasRunning = isServerRunning.value
 
                 withContext(Dispatchers.IO) {
-                    // 1. If running and port changes, reboot server
-                    if (wasRunning && validatedPort != serverPort.value) {
-                        serverManager.stopServer()
-                    }
-
-                    // 2. Persist to Room
+                    // 1. Persist to Room
                     val currentSettings = repository.getSettingsDirect() ?: ProxySetting()
                     val updated = currentSettings.copy(
                         port = validatedPort,
@@ -143,9 +138,9 @@ class GatewayViewModel(application: Application) : AndroidViewModel(application)
                     )
                     repository.updateSettings(updated)
 
-                    // 3. Restart server on new port if it was running or start it up
+                    // 2. If running and port changes, reboot server using the unified atomic transaction call
                     if (wasRunning && validatedPort != serverPort.value) {
-                        serverManager.startServer(validatedPort)
+                        serverManager.rebootServer(validatedPort)
                     }
                 }
             } catch (e: Throwable) {
@@ -164,6 +159,83 @@ class GatewayViewModel(application: Application) : AndroidViewModel(application)
                 }
             } catch (e: Throwable) {
                 Log.e("GatewayViewModel", "Error changing active model in settings", e)
+            }
+        }
+    }
+
+    // Model Download Progress & Status Management
+    private val _downloadProgress = MutableStateFlow<Map<String, Float>>(emptyMap())
+    val downloadProgress: StateFlow<Map<String, Float>> = _downloadProgress.asStateFlow()
+
+    private val _downloadStatus = MutableStateFlow<Map<String, String>>(emptyMap())
+    val downloadStatus: StateFlow<Map<String, String>> = _downloadStatus.asStateFlow()
+
+    fun downloadModel(model: com.example.data.LocalModelInfo) {
+        val modelId = model.modelId
+        val urlString = model.url
+        if (urlString.isEmpty()) {
+            _downloadStatus.value = _downloadStatus.value + (modelId to "failed: No download URL")
+            return
+        }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            _downloadStatus.value = _downloadStatus.value + (modelId to "downloading")
+            _downloadProgress.value = _downloadProgress.value + (modelId to 0f)
+
+            var connection: java.net.HttpURLConnection? = null
+            var inputStream: java.io.InputStream? = null
+            var outputStream: java.io.FileOutputStream? = null
+
+            try {
+                val targetFile = java.io.File(model.targetFilePath)
+                // Create intermediate directories
+                targetFile.parentFile?.mkdirs()
+
+                val url = java.net.URL(urlString)
+                connection = url.openConnection() as java.net.HttpURLConnection
+                connection.connectTimeout = 15000
+                connection.readTimeout = 30000
+                connection.connect()
+
+                if (connection.responseCode != java.net.HttpURLConnection.HTTP_OK) {
+                    throw java.io.IOException("HTTP ${connection.responseCode} ${connection.responseMessage}")
+                }
+
+                val fileLength = connection.contentLengthLong
+                inputStream = connection.inputStream
+                outputStream = java.io.FileOutputStream(targetFile)
+
+                val data = ByteArray(8192)
+                var total: Long = 0
+                var count: Int
+
+                while (inputStream.read(data).also { count = it } != -1) {
+                    total += count
+                    if (fileLength > 0) {
+                        val progress = total.toFloat() / fileLength
+                        _downloadProgress.value = _downloadProgress.value + (modelId to progress)
+                    }
+                    outputStream.write(data, 0, count)
+                }
+
+                outputStream.flush()
+                _downloadStatus.value = _downloadStatus.value + (modelId to "completed")
+                _downloadProgress.value = _downloadProgress.value + (modelId to 1.0f)
+
+                // Select the downloaded model and mark/indicate it as currently active
+                withContext(Dispatchers.Main) {
+                    changeActiveModel(modelId)
+                }
+
+            } catch (e: Throwable) {
+                Log.e("GatewayViewModel", "Error downloading model $modelId", e)
+                _downloadStatus.value = _downloadStatus.value + (modelId to "failed: ${e.message}")
+            } finally {
+                try {
+                    outputStream?.close()
+                    inputStream?.close()
+                } catch (e: Exception) {}
+                connection?.disconnect()
             }
         }
     }

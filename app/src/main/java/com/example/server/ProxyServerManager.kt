@@ -64,7 +64,7 @@ class ProxyServerManager(
                     }
                 }
             }
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             Log.e("ProxyServerManager", "Failed to resolve IP address", e)
         }
         return "127.0.0.1"
@@ -112,10 +112,12 @@ class ProxyServerManager(
                         } catch (e: Throwable) {
                             Log.e("ProxyServerManager", "Exception in server accept loop", e)
                         } finally {
-                            serverMutex.withLock {
-                                _isServerRunning.value = false
-                                if (serverSocket == sSocket) {
-                                    serverSocket = null
+                            withContext(NonCancellable) {
+                                serverMutex.withLock {
+                                    _isServerRunning.value = false
+                                    if (serverSocket == sSocket) {
+                                        serverSocket = null
+                                    }
                                 }
                             }
                         }
@@ -139,8 +141,93 @@ class ProxyServerManager(
                                 isAuthorized = true
                             )
                         )
-                    } catch (dbEx: Exception) {
+                    } catch (dbEx: Throwable) {
                         Log.e("ProxyServerManager", "Database write failed in start exception handler", dbEx)
+                    }
+                }
+            }
+        }
+    }
+
+    fun rebootServer(newPort: Int) {
+        _serverPort.value = newPort
+        isRunningLoop = false // Signal current loop to exit
+
+        serverScope.launch {
+            serverMutex.withLock {
+                // 1. Force close the existing server socket under lock
+                try {
+                    serverSocket?.close()
+                    serverSocket = null
+                } catch (e: Throwable) {
+                    Log.e("ProxyServerManager", "Error closing old socket during reboot", e)
+                }
+
+                _isServerRunning.value = false
+
+                // 2. Open the new server socket under lock
+                isRunningLoop = true
+                try {
+                    val sSocket = ServerSocket()
+                    sSocket.reuseAddress = true
+                    sSocket.bind(java.net.InetSocketAddress(newPort))
+                    serverSocket = sSocket
+                    _isServerRunning.value = true
+                    Log.d("ProxyServerManager", "Socket Server rebooted successfully on port $newPort")
+
+                    launch {
+                        try {
+                            while (isRunningLoop) {
+                                val clientSocket = try {
+                                    sSocket.accept()
+                                } catch (e: Throwable) {
+                                    break
+                                }
+                                launch {
+                                    try {
+                                        handleClient(clientSocket)
+                                    } catch (e: Throwable) {
+                                        Log.e("ProxyServerManager", "Exception handling client socket connection", e)
+                                        try {
+                                            clientSocket.close()
+                                        } catch (closeEx: Throwable) {
+                                        }
+                                    }
+                                }
+                            }
+                        } catch (e: Throwable) {
+                            Log.e("ProxyServerManager", "Exception in server accept loop on reboot", e)
+                        } finally {
+                            withContext(NonCancellable) {
+                                serverMutex.withLock {
+                                    _isServerRunning.value = false
+                                    if (serverSocket == sSocket) {
+                                        serverSocket = null
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } catch (e: Throwable) {
+                    Log.e("ProxyServerManager", "Failed to start socket server during reboot on port $newPort", e)
+                    _isServerRunning.value = false
+                    isRunningLoop = false
+
+                    try {
+                        repository.insertLog(
+                            GatewayLog(
+                                method = "SYSTEM",
+                                path = "START",
+                                requestModel = "NONE",
+                                clientIp = "127.0.0.1",
+                                status = 500,
+                                durationMs = 0,
+                                responsePreview = "Failed to reboot server on port $newPort: ${e.localizedMessage}",
+                                isAuthorized = true
+                            )
+                        )
+                    } catch (dbEx: Throwable) {
+                        Log.e("ProxyServerManager", "Database write failed in reboot exception handler", dbEx)
                     }
                 }
             }
@@ -157,7 +244,7 @@ class ProxyServerManager(
                     serverSocket = null
                     _isServerRunning.value = false
                     Log.d("ProxyServerManager", "Socket Server stopped successfully")
-                } catch (e: Exception) {
+                } catch (e: Throwable) {
                     Log.e("ProxyServerManager", "Error stopping socket server", e)
                 }
             }
