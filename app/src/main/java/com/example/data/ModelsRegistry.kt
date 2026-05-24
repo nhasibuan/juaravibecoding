@@ -38,6 +38,37 @@ data class LocalModelInfo(
             }
             return "/sdcard/Android/data/com.google.ai.edge.gallery/files/$modelFile"
         }
+
+    fun getResolvedTargetFile(context: android.content.Context): java.io.File {
+        if (runtimeType != "litert-lm") return java.io.File("system-managed")
+        
+        val preferredPath = targetFilePath
+        val preferredFile = java.io.File(preferredPath)
+        try {
+            // Check if the preferred path is available and readable to the app
+            if (preferredFile.exists() && preferredFile.canRead()) {
+                return preferredFile
+            }
+        } catch (e: Throwable) {
+            // SecurityException due to Scoped Storage on API 30+
+        }
+
+        // Fallback to our own app's files directory which is always accessible and writable
+        val extDir = context.getExternalFilesDir(null)
+        if (extDir != null) {
+            val subPath = when {
+                modelId == "litert-community/gemma-4-E2B-it-litert-lm" -> "Gemma_4_E2B_it/20260325/gemma4_2b_v09_obfus_fix_all_modalities_thinking.litertlm"
+                modelId == "litert-community/gemma-4-E4B-it-litert-lm" -> "Gemma_4_E4B_it/20260325/gemma4_4b_v09_obfus_fix_all_modalities_thinking.litertlm"
+                url.isNotEmpty() && url.contains("/android/") -> {
+                    val parts = url.split("/android/")
+                    if (parts.size > 1) parts[1] else modelFile
+                }
+                else -> modelFile
+            }
+            return java.io.File(extDir, subPath)
+        }
+        return java.io.File(context.filesDir, modelFile)
+    }
 }
 
 object ModelsRegistry {

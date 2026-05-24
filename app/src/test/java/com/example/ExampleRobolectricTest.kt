@@ -15,6 +15,7 @@ class ExampleRobolectricTest {
 
   @Test
   fun `read string from context`() {
+    // Force test task execution
     val context = ApplicationProvider.getApplicationContext<Context>()
     val appName = context.getString(R.string.app_name)
     assertEquals("AI Proxy Gateway", appName)

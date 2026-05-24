@@ -479,11 +479,13 @@ class ProxyServerManager(
                         val isCloudMode = settings?.targetProvider == "CLOUD_GEMINI"
 
                         if (isCloudMode) {
-                            // Resolve backend injected Gemini API key in workspace environment
-                            val geminiKey = BuildConfig.GEMINI_API_KEY
+                            // Resolve Gemini API key: prioritize device-stored settings key, then fall back to BuildConfig key
+                            val deviceKey = settings?.geminiApiKey ?: ""
+                            val geminiKey = if (deviceKey.isNotEmpty()) deviceKey else BuildConfig.GEMINI_API_KEY
+
                             if (geminiKey.isEmpty() || geminiKey == "MY_GEMINI_API_KEY") {
                                 httpStatus = 500
-                                outputResponseText = "{\"error\": {\"message\": \"Gemini API Key is missing. Please add it via the Secrets panel in AI Studio.\", \"type\": \"gateway_setup_error\"}}"
+                                outputResponseText = "{\"error\": {\"message\": \"Gemini API Key is missing. Please configure it in your Device Settings form or add it via the Secrets/Properties configuration.\", \"type\": \"gateway_setup_error\"}}"
                                 sendJsonResponse(outputStream, 500, outputResponseText)
                             } else {
                                 // Translate to standard Gemini payloads
@@ -524,10 +526,34 @@ class ProxyServerManager(
                                 }
                             }
                         } else {
-                            // 3. Local/Mock simulator response
-                            val localSimulatedJson = OpenAiToGeminiTranslator.generateSimulatedResponse(rawBody, requestModel)
-                            outputResponseText = localSimulatedJson
-                            sendJsonResponse(outputStream, 200, localSimulatedJson)
+                            val activeModelId = settings?.activeModelId ?: "litert-community/gemma-4-E2B-it-litert-lm"
+                            val activeModel = com.example.data.ModelsRegistry.getModelById(activeModelId)
+                            val isLocalVal = settings?.targetProvider == "LOCAL_VAL"
+
+                            if (isLocalVal) {
+                                val modelFile = activeModel.getResolvedTargetFile(context)
+                                val isDownloaded = modelFile.exists() && modelFile.length() > 0
+                                if (isDownloaded) {
+                                    // High-fidelity LiteRT-LM Local weights execution
+                                    val liteRtResponse = OpenAiToGeminiTranslator.generateLiteRtLmResponse(
+                                        rawBody,
+                                        requestModel,
+                                        modelFile.absolutePath
+                                    )
+                                    outputResponseText = liteRtResponse
+                                    sendJsonResponse(outputStream, 200, liteRtResponse)
+                                } else {
+                                    // Fallback to On-Device Mock Simulator sandbox as documented in README
+                                    val fallbackResponse = OpenAiToGeminiTranslator.generateSimulatedResponse(rawBody, requestModel)
+                                    outputResponseText = fallbackResponse
+                                    sendJsonResponse(outputStream, 200, fallbackResponse)
+                                }
+                            } else {
+                                // Default simulated/mock sandbox response
+                                val localSimulatedJson = OpenAiToGeminiTranslator.generateSimulatedResponse(rawBody, requestModel)
+                                outputResponseText = localSimulatedJson
+                                sendJsonResponse(outputStream, 200, localSimulatedJson)
+                            }
                         }
 
                         val duration = System.currentTimeMillis() - startTime

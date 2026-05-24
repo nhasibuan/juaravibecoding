@@ -57,6 +57,7 @@ class GatewayViewModel(application: Application) : AndroidViewModel(application)
     // Temporary user input inputs to allow typing before clicking apply
     val portInput = MutableStateFlow("8080")
     val apiKeyInput = MutableStateFlow("")
+    val geminiApiKeyInput = MutableStateFlow("")
 
     init {
         viewModelScope.launch {
@@ -70,6 +71,7 @@ class GatewayViewModel(application: Application) : AndroidViewModel(application)
 
                 portInput.value = dbSettings.port.toString()
                 apiKeyInput.value = dbSettings.proxyApiKey
+                geminiApiKeyInput.value = dbSettings.geminiApiKey
 
                 // Update IP address on a background thread safely
                 val localIp = withContext(Dispatchers.IO) {
@@ -121,7 +123,7 @@ class GatewayViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    fun applySettings(portText: String, apiKeyText: String, activeModelId: String, provider: String) {
+    fun applySettings(portText: String, apiKeyText: String, activeModelId: String, provider: String, geminiApiKeyText: String) {
         viewModelScope.launch {
             try {
                 val validatedPort = portText.toIntOrNull() ?: 8080
@@ -134,7 +136,8 @@ class GatewayViewModel(application: Application) : AndroidViewModel(application)
                         port = validatedPort,
                         proxyApiKey = apiKeyText.trim(),
                         activeModelId = activeModelId,
-                        targetProvider = provider
+                        targetProvider = provider,
+                        geminiApiKey = geminiApiKeyText.trim()
                     )
                     repository.updateSettings(updated)
 
@@ -187,7 +190,7 @@ class GatewayViewModel(application: Application) : AndroidViewModel(application)
             var outputStream: java.io.FileOutputStream? = null
 
             try {
-                val targetFile = java.io.File(model.targetFilePath)
+                val targetFile = model.getResolvedTargetFile(getApplication())
                 // Create intermediate directories
                 targetFile.parentFile?.mkdirs()
 

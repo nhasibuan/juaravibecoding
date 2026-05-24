@@ -60,12 +60,15 @@ fun GatewayScreen(
     var portValue by remember { mutableStateOf("8080") }
     var apiKeyValue by remember { mutableStateOf("") }
     var showApiKey by remember { mutableStateOf(false) }
+    var geminiApiKeyValue by remember { mutableStateOf("") }
+    var showGeminiApiKey by remember { mutableStateOf(false) }
 
     // Sync input states when configuration loads up from DB
     LaunchedEffect(settings) {
         settings?.let {
             portValue = it.port.toString()
             apiKeyValue = it.proxyApiKey
+            geminiApiKeyValue = it.geminiApiKey
         }
     }
 
@@ -401,6 +404,39 @@ fun GatewayScreen(
                                 .testTag("api_key_settings_input")
                         )
 
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        // Device-Stored Gemini API Key field
+                        OutlinedTextField(
+                            value = geminiApiKeyValue,
+                            onValueChange = { geminiApiKeyValue = it },
+                            label = { Text("Device-Stored Gemini API Key (Optional)") },
+                            placeholder = { Text("Saves key directly on this Android target") },
+                            singleLine = true,
+                            visualTransformation = if (showGeminiApiKey) VisualTransformation.None else PasswordVisualTransformation(),
+                            trailingIcon = {
+                                TextButton(onClick = { showGeminiApiKey = !showGeminiApiKey }) {
+                                    Text(
+                                        text = if (showGeminiApiKey) "HIDE" else "SHOW",
+                                        color = accentCyan,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            },
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedTextColor = Color.White,
+                                unfocusedTextColor = Color.White,
+                                focusedBorderColor = accentCyan,
+                                unfocusedBorderColor = Color.LightGray.copy(alpha = 0.3f),
+                                focusedLabelColor = accentCyan,
+                                unfocusedLabelColor = Color.LightGray
+                            ),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("gemini_api_key_settings_input")
+                        )
+
                         Spacer(modifier = Modifier.height(16.dp))
 
                         Button(
@@ -409,7 +445,8 @@ fun GatewayScreen(
                                     portText = portValue,
                                     apiKeyText = apiKeyValue,
                                     activeModelId = settings?.activeModelId ?: "litert-community/gemma-4-E2B-it-litert-lm",
-                                    provider = settings?.targetProvider ?: "CLOUD_GEMINI"
+                                    provider = settings?.targetProvider ?: "CLOUD_GEMINI",
+                                    geminiApiKeyText = geminiApiKeyValue
                                 )
                                 Toast.makeText(context, "Proxy parameters updated!", Toast.LENGTH_SHORT).show()
                             },
@@ -570,13 +607,19 @@ fun GatewayScreen(
                                         }
                                     }
                                 }
-
                                 if (model.runtimeType == "litert-lm") {
-                                    val localFile = remember(model.targetFilePath, downloadStatus[model.modelId]) { java.io.File(model.targetFilePath) }
-                                    val isDownloaded = localFile.exists() && localFile.length() > 0
+                                    val localFile = remember(model.modelId, downloadStatus[model.modelId]) { model.getResolvedTargetFile(context) }
+                                    val resolvedPath = remember(localFile) { localFile.absolutePath }
+                                    val isDownloaded = remember(localFile) {
+                                        try {
+                                            localFile.exists() && localFile.length() > 0
+                                        } catch (e: Throwable) {
+                                            false
+                                        }
+                                    }
                                     val status = downloadStatus[model.modelId] ?: "idle"
                                     val progress = downloadProgress[model.modelId] ?: 0f
-
+ 
                                     Spacer(modifier = Modifier.height(10.dp))
                                     Column(
                                         modifier = Modifier
@@ -599,7 +642,7 @@ fun GatewayScreen(
                                                 )
                                                 Spacer(modifier = Modifier.height(2.dp))
                                                 Text(
-                                                    text = model.targetFilePath,
+                                                    text = resolvedPath,
                                                     fontSize = 9.sp,
                                                     fontFamily = FontFamily.Monospace,
                                                     color = Color.LightGray.copy(alpha = 0.8f),
@@ -610,7 +653,7 @@ fun GatewayScreen(
                                             Spacer(modifier = Modifier.width(8.dp))
                                             TextButton(
                                                 onClick = {
-                                                    clipboardManager.setText(AnnotatedString(model.targetFilePath))
+                                                    clipboardManager.setText(AnnotatedString(resolvedPath))
                                                     Toast.makeText(context, "Copied storage path!", Toast.LENGTH_SHORT).show()
                                                 },
                                                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
