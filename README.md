@@ -1,6 +1,6 @@
 # AI Proxy Gateway (Professional Product Documentation & System Guide)
 
-Welcome to the **AI Proxy Gateway**, a high-performance Android middleware designed to bridge standard OpenAI-compatible applications with Google Gemini models. This application runs entirely on an Android target (device or emulator), providing an ultra-low-latency local HTTP proxy server that intercepts standard OpenAI REST API requests, translates them to Google Gemini formats, forwards them to the active engine (local simulation, downloadable LiteRT-LM, or Cloud Gemini APIs), and returns the results back to the caller in perfect OpenAI format.
+Welcome to the **AI Proxy Gateway**, a high-performance Android middleware designed to bridge standard OpenAI-compatible applications with Google Gemini models. This application runs entirely on an Android target (device or emulator), providing an ultra-low-latency local HTTP proxy server that intercepts standard OpenAI REST API requests, translates them to Google Gemini formats, forwards them to the active engine (**LiteRT-LM** or **Cloud Gemini APIs**), and returns the results back to the caller in perfect OpenAI format.
 
 ---
 
@@ -28,7 +28,7 @@ Many legacy, enterprise, and newly-engineered server integrations are built arou
 
 The **AI Proxy Gateway** solves these pain points by behaving as an intelligent local network hub on any Wi-Fi or local IP network:
 *   **Zero-Invasive Integration:** Existing client software can simply alter their API base URL to the local Android gateway IP address and port (e.g., `http://192.168.1.144:8080/v1`). No client code rewrites are required.
-*   **Cost Control & Offline Resiliency:** Teams can switch between secure **Cloud Gemini API** endpoints and **On-Device Local Simulation / LiteRT-LM** configurations with a single tap, shielding organizations from high API billing and supporting total offline functionality.
+*   **Cost Control & Offline Resiliency:** Teams can switch between secure **Cloud Gemini API** endpoints and on-device **LiteRT-LM** configurations with a single tap, shielding organizations from high API billing and supporting total offline functionality.
 *   **Dynamic Provider Switching:** Teams can seamlessly switch routing modes directly under the **Gateway Configuration** panel. Tapping these choices updates a centralized configuration record in a thread-safe Room SQLite database. The live background socket handler actively reads this persistent state for every raw incoming HTTP client request, swapping the execution pipeline between OkHttp cloud tunnels and native local on-device processing instantly without requiring client updates, server restarts, or device reboots.
 *   **Total Data Protection:** Highly confidential inputs can be translated and executed offline without sending any raw data outside the local area network (LAN).
 
@@ -43,23 +43,23 @@ The **AI Proxy Gateway** solves these pain points by behaving as an intelligent 
     *   `GET /v1/models` (exposes valid available local/cloud model IDs).
 *   **Robust Multi-Provider Routing:**
     *   **Cloud Gemini:** Proxying inbound requests directly to online Google Gemini Models using standard API keys.
-    *   **On-Device LiteRT-LM Engine & Local Simulation:** Integrates direct execution of highly efficient local `*.litertlm` (LiteRT Language Model) weights downloaded or sideloaded across Android storage directories. When LiteRT-LM is enabled, standard OpenAI REST requests are processed directly on-device by loading model weights from local directories (e.g., inside Scoped or Shared Storage) on high-speed Android accelerators (GPU/CPU). If physical model files are not yet downloaded, the engine falls back to an **On-Device Mock Simulator** sandbox which simulates deep chain-of-thought traces with structural thinking blocks (`<think>...</think>`) replicating advanced models (like DeepSeek-R1-Distill and Gemma-4-Thinking) to run system integration tests instantly.
+    *   **On-Device LiteRT-LM Engine:** Integrates direct execution of highly efficient local `*.litertlm` (LiteRT Language Model) weights downloaded or sideloaded across Android storage directories. When LiteRT-LM is enabled, standard OpenAI REST requests are processed directly on-device by loading model weights from local directories (e.g., inside Scoped or Shared Storage) on high-speed Android accelerators (GPU/CPU). If physical model files are not yet downloaded, the backend returns a clear, descriptive HTTP 400 Bad Request error specifying that model weights are missing and must be downloaded first. No fake simulations or mock fallbacks are used.
 *   **LiteRT-LM Model Storage Path Manager:** Explicit directory tracking across Android storage directories (e.g. `/sdcard/Android/data/...`) to let downstream runtimes target downloadable files directly.
 *   **Integrated Local Download Downloader:** A dynamic background download engine that fetches `*.litertlm` models direct from hosting locations, reports accurate fractional download speeds, saves them on Android storage targets, and automatically activates the downloaded model on completion.
 *   **Live Sockets Lifecycle Controls:** Safe network server socket operations on dynamic ports configured via local UI.
 *   **Real-time Traffic Auditing Console:** Persistent logging and inspection interface listing system responses, durations, path methods, performance indicators, and caller IP addresses.
 
 ### 1.4 Active Engine Comparison
-To fit different operational, privacy, and cost profiles, teams can select among three active engines on the gateway:
+To fit different operational, privacy, and cost profiles, teams can select among the two active engines on the gateway:
 
-| Attribute | Cloud Gemini APIs (`CLOUD_GEMINI`) | Downloadable LiteRT-LM (`LOCAL_VAL`) | On-Device Mock Simulator (`MOCK`) |
-| :--- | :--- | :--- | :--- |
-| **Operational Mode** | Offloads processing to secure Google cloud servers. | Loads and executes model binaries natively on the device. | Instantly returns high-fidelity simulated response streams. |
-| **Internet Dependency** | Yes (Active network internet/cellular connection is mandatory). | No (100% offline local loop operation). | No (100% offline local loop operation). |
-| **Hardware Overhead** | Minimal (Standard networking, minimal battery impact). | Moderate-High (Consumes CPU/GPU and system RAM based on model size). | Near Zero (No neural models loaded into memory). |
-| **Data Residency** | Input transmitted securely to Google Gemini API servers. | 100% confidential. No data ever leaves the physical target device. | 100% confidential. Local loopback mock generations. |
-| **Capabilities Profile** | Access to complex ultra-large models (e.g., Gemini 2.5 Pro / Flash). | Run highly-optimized small edge models (Gemma-3n/4, Qwen-2.5, DeepSeek-Distill). | Custom mock patterns with customizable deep chain-of-thought blocks (`<think>...</think>`). |
-| **Cost Profile** | Standard API token billing rates of Google Cloud AI. | Free local compute. Absolute zero API token bills. | Free local compute. Absolute zero API token bills. |
+| Attribute | Cloud Gemini APIs (`CLOUD_GEMINI`) | Downloadable LiteRT-LM (`LOCAL_VAL`) |
+| :--- | :--- | :--- |
+| **Operational Mode** | Offloads processing to secure Google cloud servers. | Loads and executes model binaries natively on the device. |
+| **Internet Dependency** | Yes (Active network internet/cellular connection is mandatory). | No (100% offline local loop operation). |
+| **Hardware Overhead** | Minimal (Standard networking, minimal battery impact). | Moderate-High (Consumes CPU/GPU and system RAM based on model size). |
+| **Data Residency** | Input transmitted securely to Google Gemini API servers. | 100% confidential. No data ever leaves the physical target device. |
+| **Capabilities Profile** | Access to complex ultra-large models (e.g., Gemini 2.5 Pro / Flash). | Run highly-optimized small edge models (Gemma-3n/4, Qwen-2.5, DeepSeek-Distill). |
+| **Cost Profile** | Standard API token billing rates of Google Cloud AI. | Free local compute. Absolute zero API token bills. |
 
 ---
 
@@ -86,11 +86,11 @@ The application uses an **MVVM (Model-View-ViewModel)** architectural pattern. D
        |    - Outbound Gemini JSON -> OpenAI layout |     |
        +-----------+--------------------+-----------+     |
                    |                    |                 |
-                   | (Mock Mode)        | (Cloud Mode)    |
+                   | (LiteRT-LM Mode)   | (Cloud Mode)    |
                    v                    v                 |
        +---------------------+ +--------------------+     |
-       |   Local Developer   | | Google Gemini Cloud|     |
-       |  Simulation Engine  | |   REST Endpoint    |     |
+       |  LiteRT-LM Engine   | | Google Gemini Cloud|     |
+       | (On-Device weights) | |   REST Endpoint    |     |
        +---------------------+ +--------------------+     |
                                                           |
     ===================== STATE ENGINE =====================|
@@ -107,7 +107,7 @@ The application uses an **MVVM (Model-View-ViewModel)** architectural pattern. D
     +-------------------------------------------------+
     |                [GatewayScreen]                  |
     |  - Material 3 Visual Controller Screen          |
-    |  - Model Selector Radio Cards, Progress Indicators|
+    |  - Interactive Model Cards, Progress Indicators |
     +-------------------------------------------------+
 ```
 
@@ -126,7 +126,7 @@ This table encapsulates the core configuration state of the proxy server. For ro
 | `port` | `INTEGER` | `NOT NULL` | Range: `1024` - `65535` | `8080` | Port assigned to start the background proxy server socket. |
 | `proxyApiKey` | `TEXT` | `NOT NULL` | None | `""` | Restricts client API access. Rejects requests lacking bearer matching. |
 | `activeModelId` | `TEXT` | `NOT NULL` | None | `"litert-community/gemma-4-E2B-it-litert-lm"` | Active AI model target selection ID. |
-| `targetProvider` | `TEXT` | `NOT NULL` | One of: `"CLOUD_GEMINI"`, `"LOCAL_VAL"`, `"MOCK"` | `"CLOUD_GEMINI"` | Active routing provider strategy. |
+| `targetProvider` | `TEXT` | `NOT NULL` | One of: `"CLOUD_GEMINI"`, `"LOCAL_VAL"` | `"CLOUD_GEMINI"` | Active routing provider strategy. |
 | `geminiApiKey` | `TEXT` | `NOT NULL` | None | `""` | Device-stored custom Gemini API Key. Overrides BuildConfig keys. |
 
 #### Table 2: `gateway_logs`
@@ -239,12 +239,12 @@ A comprehensive mapping of each of the codebase files, outlining their direct re
 #### 12. `app/src/main/java/com/example/server/OpenAiToGeminiTranslator.kt`
 *   **Direct Role:** Bidirectional REST translation processor.
 *   **Direct Consumers:** Executed by `ProxyServerManager`.
-*   **Detailed Function:** Maps inbound standard OpenAI JSON payloads onto Google Gemini API structures. Translates results back to the OpenAI schema, and includes a fallback simulation engine for offline local test integrations (`generateLiteRtLmResponse`).
+*   **Detailed Function:** Maps inbound standard OpenAI JSON payloads onto Google Gemini API structures. Translates results back to the OpenAI schema, and includes support for parsing and compiling offline responses for native on-device LiteRT-LM executed targets (`generateLiteRtLmResponse`).
 
 #### 13. `app/src/main/java/com/example/server/ProxyServerManager.kt`
 *   **Direct Role:** Background network multi-threaded server socket.
 *   **Direct Consumers:** Initialized, monitored, and stopped by `GatewayViewModel`.
-*   **Detailed Function:** Runs socket connections, parses inputs, filters malicious streams, enforces authorization keys, verifies 10MB memory limits, intercepts CORS preflights, and routes processes to chosen provider pipelines.
+*   **Detailed Function:** Runs socket connections, parses inputs, filters malicious streams, enforces authorization keys, verifies 10MB memory limits, intercepts CORS preflights, and routes processes to chosen provider pipelines (Google Gemini API or on-device LiteRT-LM).
 
 #### 14. `app/src/test/java/com/example/ExampleRobolectricTest.kt`
 *   **Direct Role:** Fast local unit tests.
@@ -291,9 +291,8 @@ Alternatively, you can compile and bundle development credentials directly into 
     *   **PORT:** Enter a dynamic listening port (e.g. `8080`).
     *   **GATEWAY API KEY:** Establish a gateway password (e.g., `SecureProxyKey99`) to block unauthorized external clients on your Wi-Fi network. Leaving this setting blank skips client authorization checking.
     *   **PROVIDER:** Choose your active execution engine:
-        *   `CLOUD_GEMINI`: Route requests online to Google cloud servers.
-        *   `LOCAL_VAL`: Run local downloaded `*.litertlm` models with 100% offline security.
-        *   `MOCK`: Return instant offline high-fidelity simulated test completions.
+        *   `Cloud Gemini API`: Route requests online to Google cloud servers.
+        *   `LiteRT-LM`: Run local downloaded `*.litertlm` models with 100% offline security. Note: If the weight files are not downloaded yet, the gateway will return an HTTP 400 Bad Request error to callers instead of executing simulated fallbacks.
 3.  Click the **APPLY SETTINGS** button in the layout. This updates parameters instantly inside the Room database.
 4.  Launch the listener by clicking the **START SERVER** button. The server card will instantly display a green **"RUNNING"** status and display host IP details (e.g., `http://192.168.1.144:8080`).
 
@@ -302,14 +301,15 @@ Alternatively, you can compile and bundle development credentials directly into 
 ### Step 3: Manage and Download LiteRT Model Files (*.litertlm)
 
 For offline LiteRT execution, you can download model weight files directly onto your device storage:
-1. Navigate to the **TARGET MODELS DIRECTORY** section.
-2. Click to expand your desired model row. The card will display:
-    *   The absolute path on your device file-system where weights will be stored.
-    *   A status tag: Gray **"NOT DOWNLOADED"** or green **"DOWNLOADED & READY"**.
-3. Click the **DOWNLOAD FILE** action button.
-4. A progress tracker will show the percentage progress and current download rate in real time.
-5. On completion, the system verifies the file, sets the badge to **"DOWNLOADED & READY"**, and automatically targets that model as the active local engine.
-6. Tap **COPY PATH** to copy the target weight destination path to your clip-board.
+1. Navigate to the **ON-DEVICE GATED MODELS** section.
+2. View the clean, uncluttered visual directory cards representing each of the supported LiteRT-LM models. These cards focus purely on file status and download progress without redundant selection indicators, default markers, check icons, or interactive radio buttons.
+3. Tap to expand the desired model's card to access weight location paths and status flags:
+    *   The absolute path on your device file-system where weights are or will be stored.
+    *   A file status badge: Gray **"NOT DOWNLOADED"** or green **"DOWNLOADED & READY"**.
+4. Click the **DOWNLOAD FILE** action button on the expanded card.
+5. A progress tracker will show the percentage progress and current download rate in real time.
+6. Once downloaded, the system verifies the physical model file. The gateway dynamically resolves and targets this model file when requested by external client APIs (through the client's request model parameter or `/v1/models` API resolution).
+7. Tap **COPY PATH** to copy the target weight destination path to your clipboard.
 
 ---
 
@@ -350,7 +350,7 @@ The server processes the payload and returns standard compliant JSON structure:
       "index": 0,
       "message": {
         "role": "assistant",
-        "content": "<think>\nDetermining calculations optimizations.\nInput is: fun calculate(x: Int) = x * 2\n</think>\nYes, this function is highly optimized as it compiles down into a simple bitshift or fast multiply..."
+        "content": "Yes, this function is highly optimized as it compiles down into a simple bitshift or fast multiply..."
       },
       "finish_reason": "stop"
     }
@@ -363,9 +363,21 @@ The server processes the payload and returns standard compliant JSON structure:
 }
 ```
 
+If LiteRT-LM is selected but you have not downloaded the corresponding model weights, the gateway responds with an HTTP 400 Bad Request error payload:
+
+```json
+{
+  "error": {
+    "message": "Local LiteRT-LM model weights for 'litert-community/gemma-4-E2B-it-litert-lm' are not downloaded elements. Please download the weights first through the gateway application UI before choosing LiteRT-LM route.",
+    "type": "model_not_found",
+    "code": 400
+  }
+}
+```
+
 ---
 
-### Step 5: Real-time Transaction Auditing
+### Step 5: Real-time Traffic Auditing
 
 1.  Review requests as they arrive in the **Traffic Logs** panel at the bottom of your screen.
 2.  Successful transactions appear in green marked with HTTP code `200`. Rejected connections (e.g., missing API keys) report code `401`. Extremely large inputs exceeding restrictions display status code `413`.

@@ -398,29 +398,39 @@ class ProxyServerManager(
                         if (isModelsEndpoint) {
                             val modelsList = org.json.JSONArray()
                             com.example.data.ModelsRegistry.allowedModels.forEach { model ->
-                                val mObj = org.json.JSONObject()
-                                    .put("id", model.modelId)
-                                    .put("object", "model")
-                                    .put("created", 1710000000)
-                                    .put("owned_by", "gateway")
-                                modelsList.put(mObj)
+                                var isAvailable = false
+                                if (model.runtimeType == "aicore") {
+                                    isAvailable = true
+                                } else if (model.runtimeType == "litert-lm") {
+                                    val file = model.getResolvedTargetFile(context)
+                                    if (file.exists() && file.isFile && file.length() > 0) {
+                                        isAvailable = true
+                                    }
+                                }
+
+                                if (isAvailable) {
+                                    val mObj = org.json.JSONObject()
+                                        .put("id", model.modelId)
+                                        .put("object", "model")
+                                        .put("created", 1710000000)
+                                        .put("owned_by", "gateway-local")
+                                    modelsList.put(mObj)
+                                }
                             }
 
-                            // Add standard models for ultimate compatibility
-                            val standardModels = listOf(
+                            // Add only valid Google Gemini cloud models for compatibility
+                            val geminiCloudModels = listOf(
                                 "gemini-2.5-flash",
                                 "gemini-2.5-pro",
-                                "gpt-3.5-turbo",
-                                "gpt-4o",
-                                "gpt-4",
-                                "deepseek-reasoner"
+                                "gemini-1.5-flash",
+                                "gemini-1.5-pro"
                             )
-                            standardModels.forEach { id ->
+                            geminiCloudModels.forEach { id ->
                                 val mObj = org.json.JSONObject()
                                     .put("id", id)
                                     .put("object", "model")
                                     .put("created", 1710000000)
-                                    .put("owned_by", "upstream")
+                                    .put("owned_by", "google-cloud")
                                 modelsList.put(mObj)
                             }
 
@@ -526,7 +536,11 @@ class ProxyServerManager(
                                 }
                             }
                         } else {
-                            val activeModelId = settings?.activeModelId ?: "litert-community/gemma-4-E2B-it-litert-lm"
+                            val activeModelId = if (com.example.data.ModelsRegistry.allowedModels.any { it.modelId == requestModel }) {
+                                requestModel
+                            } else {
+                                settings?.activeModelId ?: "litert-community/gemma-4-E2B-it-litert-lm"
+                            }
                             val activeModel = com.example.data.ModelsRegistry.getModelById(activeModelId)
                             val isLocalVal = settings?.targetProvider == "LOCAL_VAL"
 
@@ -543,16 +557,14 @@ class ProxyServerManager(
                                     outputResponseText = liteRtResponse
                                     sendJsonResponse(outputStream, 200, liteRtResponse)
                                 } else {
-                                    // Fallback to On-Device Mock Simulator sandbox as documented in README
-                                    val fallbackResponse = OpenAiToGeminiTranslator.generateSimulatedResponse(rawBody, requestModel)
-                                    outputResponseText = fallbackResponse
-                                    sendJsonResponse(outputStream, 200, fallbackResponse)
+                                    httpStatus = 400
+                                    outputResponseText = "{\"error\": {\"message\": \"Local LiteRT-LM model weights for '$activeModelId' are not downloaded elements. Please download the weights first through the gateway application UI before choosing LiteRT-LM route.\", \"type\": \"model_not_found\", \"code\": 400}}"
+                                    sendJsonResponse(outputStream, 400, outputResponseText)
                                 }
                             } else {
-                                // Default simulated/mock sandbox response
-                                val localSimulatedJson = OpenAiToGeminiTranslator.generateSimulatedResponse(rawBody, requestModel)
-                                outputResponseText = localSimulatedJson
-                                sendJsonResponse(outputStream, 200, localSimulatedJson)
+                                httpStatus = 400
+                                outputResponseText = "{\"error\": {\"message\": \"Unsupported routing strategy or provider mismatch. Only Cloud Gemini API and local LiteRT-LM routes are supported.\", \"type\": \"unsupported_provider\", \"code\": 400}}"
+                                sendJsonResponse(outputStream, 400, outputResponseText)
                             }
                         }
 

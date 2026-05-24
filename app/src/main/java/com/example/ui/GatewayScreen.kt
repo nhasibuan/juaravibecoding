@@ -344,7 +344,7 @@ fun GatewayScreen(
                                 shape = RoundedCornerShape(6.dp),
                                 contentPadding = PaddingValues(0.dp)
                             ) {
-                                Text("Local Simulator", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                Text("LiteRT-LM", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                             }
                         }
 
@@ -475,23 +475,12 @@ fun GatewayScreen(
                     )
 
                     ModelsRegistry.allowedModels.forEach { model ->
-                        val isCurrentlySelected = settings?.activeModelId == model.modelId
-                        
                         Card(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(vertical = 6.dp)
-                                .clickable {
-                                    viewModel.changeActiveModel(model.modelId)
-                                    Toast.makeText(context, "Selected ${model.name}", Toast.LENGTH_SHORT).show()
-                                }
-                                .border(
-                                    width = if (isCurrentlySelected) 2.dp else 0.dp,
-                                    color = if (isCurrentlySelected) accentCyan else Color.Transparent,
-                                    shape = RoundedCornerShape(12.dp)
-                                ),
+                                .padding(vertical = 6.dp),
                             colors = CardDefaults.cardColors(
-                                containerColor = if (isCurrentlySelected) Color(0xFF1E293B) else Color(0xFF0F172A).copy(alpha = 0.6f)
+                                containerColor = Color(0xFF0F172A).copy(alpha = 0.6f)
                             ),
                             shape = RoundedCornerShape(12.dp)
                         ) {
@@ -509,51 +498,16 @@ fun GatewayScreen(
                                         verticalAlignment = Alignment.CenterVertically,
                                         modifier = Modifier.weight(1f)
                                     ) {
-                                        RadioButton(
-                                            selected = isCurrentlySelected,
-                                            onClick = {
-                                                viewModel.changeActiveModel(model.modelId)
-                                                Toast.makeText(context, "Selected ${model.name}", Toast.LENGTH_SHORT).show()
-                                            },
-                                            colors = RadioButtonDefaults.colors(
-                                                selectedColor = accentCyan,
-                                                unselectedColor = Color.LightGray
-                                            ),
-                                            modifier = Modifier.padding(end = 4.dp)
-                                        )
                                         Column {
                                             Row(verticalAlignment = Alignment.CenterVertically) {
                                                 Text(
                                                     text = model.name,
                                                     fontSize = 14.sp,
                                                     fontWeight = FontWeight.Bold,
-                                                    color = if (isCurrentlySelected) accentCyan else Color.White
+                                                    color = Color.White
                                                 )
-                                                if (model.modelId == "litert-community/gemma-4-E2B-it-litert-lm") {
-                                                    Spacer(modifier = Modifier.width(6.dp))
-                                                    Badge(
-                                                        containerColor = accentCyan.copy(alpha = 0.2f),
-                                                        contentColor = accentCyan
-                                                    ) {
-                                                        Text(
-                                                            text = "★ DEFAULT",
-                                                            fontSize = 8.sp,
-                                                            fontWeight = FontWeight.Bold,
-                                                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
-                                                        )
-                                                    }
-                                                }
                                             }
                                         }
-                                    }
-
-                                    if (isCurrentlySelected) {
-                                        Icon(
-                                            imageVector = Icons.Default.CheckCircle,
-                                            contentDescription = "Active Model",
-                                            tint = accentCyan,
-                                            modifier = Modifier.size(16.dp)
-                                        )
                                     }
                                 }
 

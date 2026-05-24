@@ -174,6 +174,7 @@ object ModelsRegistry {
             modelFile = "Qwen2.5-1.5B-Instruct_multi-prefill-seq_q8_ekv4096.litertlm",
             runtimeType = "litert-lm",
             description = "A variant of Qwen/Qwen2.5-1.5B-Instruct ready for deployment on Android using LiteRT-LM.",
+            url = "https://dl.google.com/google-ai-edge-gallery/android/qwen2.5/20260210/Qwen2.5-1.5B-Instruct_multi-prefill-seq_q8_ekv4096.litertlm",
             sizeInBytes = 1597931520,
             minDeviceMemoryInGb = 6,
             accelerators = "gpu,cpu"
@@ -184,6 +185,7 @@ object ModelsRegistry {
             modelFile = "DeepSeek-R1-Distill-Qwen-1.5B_multi-prefill-seq_q8_ekv4096.litertlm",
             runtimeType = "litert-lm",
             description = "A variant of deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B ready for deployment on Android using LiteRT-LM with high-fidelity reasoning paths.",
+            url = "https://dl.google.com/google-ai-edge-gallery/android/deepseek/20260220/DeepSeek-R1-Distill-Qwen-1.5B_multi-prefill-seq_q8_ekv4096.litertlm",
             sizeInBytes = 1833451520,
             minDeviceMemoryInGb = 6,
             llmSupportThinking = true,
