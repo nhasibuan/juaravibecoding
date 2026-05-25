@@ -11,6 +11,7 @@ import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.ui.GatewayScreen
 import com.example.ui.GatewayViewModel
+import com.example.ui.GatewayViewModelFactory
 import com.example.ui.theme.MyApplicationTheme
 
 class MainActivity : ComponentActivity() {
@@ -19,7 +20,9 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             MyApplicationTheme {
-                val viewModel: GatewayViewModel = viewModel()
+                val viewModel: GatewayViewModel = viewModel(
+                    factory = GatewayViewModelFactory(application)
+                )
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
                     GatewayScreen(
                         viewModel = viewModel,

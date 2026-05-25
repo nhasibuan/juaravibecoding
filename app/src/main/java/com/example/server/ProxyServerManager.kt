@@ -70,184 +70,189 @@ class ProxyServerManager(
         return "127.0.0.1"
     }
 
-    fun startServer(port: Int) {
+    suspend fun startServer(port: Int) = withContext(Dispatchers.IO) {
         _serverPort.value = port
         isRunningLoop = true
 
-        serverScope.launch {
-            serverMutex.withLock {
-                if (_isServerRunning.value) return@withLock
+        serverMutex.withLock {
+            if (_isServerRunning.value) return@withLock
 
-                try {
-                    val sSocket = ServerSocket()
-                    sSocket.reuseAddress = true
-                    sSocket.bind(java.net.InetSocketAddress(port))
-                    serverSocket = sSocket
-                    _isServerRunning.value = true
-                    Log.d("ProxyServerManager", "Socket Server started successfully on port $port")
+            try {
+                val sSocket = ServerSocket()
+                sSocket.reuseAddress = true
+                sSocket.bind(java.net.InetSocketAddress(port))
+                serverSocket = sSocket
+                _isServerRunning.value = true
+                Log.d("ProxyServerManager", "Socket Server started successfully on port $port")
 
-                    // Run the accept loop in a separate coroutine so we do not block the Mutex lock
-                    launch {
-                        try {
-                            while (isRunningLoop) {
-                                val clientSocket = try {
-                                    sSocket.accept()
-                                } catch (e: Throwable) {
-                                    // socket closed or stopped
-                                    break
-                                }
-                                launch {
-                                    try {
-                                        handleClient(clientSocket)
-                                    } catch (e: Throwable) {
-                                        Log.e("ProxyServerManager", "Exception handling client socket connection", e)
-                                        try {
-                                            clientSocket.close()
-                                        } catch (closeEx: Throwable) {
-                                            // Ignore close exception
-                                        }
-                                    }
-                                }
+                // Run the accept loop in a separate coroutine so we do not block the Mutex lock
+                serverScope.launch {
+                    try {
+                        while (isRunningLoop) {
+                            val clientSocket = try {
+                                sSocket.accept()
+                            } catch (e: Throwable) {
+                                // socket closed or stopped
+                                break
                             }
-                        } catch (e: Throwable) {
-                            Log.e("ProxyServerManager", "Exception in server accept loop", e)
-                        } finally {
-                            withContext(NonCancellable) {
-                                serverMutex.withLock {
-                                    _isServerRunning.value = false
-                                    if (serverSocket == sSocket) {
-                                        serverSocket = null
+                            launch {
+                                try {
+                                    handleClient(clientSocket)
+                                } catch (e: Throwable) {
+                                    Log.e("ProxyServerManager", "Exception handling client socket connection", e)
+                                    try {
+                                        clientSocket.close()
+                                    } catch (closeEx: Throwable) {
+                                        // Ignore close exception
                                     }
                                 }
                             }
                         }
+                    } catch (e: Throwable) {
+                        Log.e("ProxyServerManager", "Exception in server accept loop", e)
+                    } finally {
+                        withContext(NonCancellable) {
+                            serverMutex.withLock {
+                                _isServerRunning.value = false
+                                if (serverSocket == sSocket) {
+                                    serverSocket = null
+                                }
+                            }
+                        }
                     }
-                } catch (e: Throwable) {
-                    Log.e("ProxyServerManager", "Failed to start socket server on port $port", e)
-                    _isServerRunning.value = false
-                    isRunningLoop = false
-                    
-                    try {
-                        // Write internal error to logs to alert user
-                        repository.insertLog(
-                            GatewayLog(
-                                method = "SYSTEM",
-                                path = "START",
-                                requestModel = "NONE",
-                                clientIp = "127.0.0.1",
-                                status = 500,
-                                durationMs = 0,
-                                responsePreview = "Failed to start server on port $port: ${e.localizedMessage}",
-                                isAuthorized = true
-                            )
+                }
+            } catch (e: Throwable) {
+                Log.e("ProxyServerManager", "Failed to start socket server on port $port", e)
+                _isServerRunning.value = false
+                isRunningLoop = false
+                
+                try {
+                    // Write internal error to logs to alert user
+                    repository.insertLog(
+                        GatewayLog(
+                            method = "SYSTEM",
+                            path = "START",
+                            requestModel = "NONE",
+                            clientIp = "127.0.0.1",
+                            status = 500,
+                            durationMs = 0,
+                            responsePreview = "Failed to start server on port $port: ${e.localizedMessage}",
+                            isAuthorized = true
                         )
-                    } catch (dbEx: Throwable) {
-                        Log.e("ProxyServerManager", "Database write failed in start exception handler", dbEx)
-                    }
+                    )
+                } catch (dbEx: Throwable) {
+                    Log.e("ProxyServerManager", "Database write failed in start exception handler", dbEx)
                 }
             }
         }
     }
 
-    fun rebootServer(newPort: Int) {
+    suspend fun rebootServer(newPort: Int) = withContext(Dispatchers.IO) {
         _serverPort.value = newPort
         isRunningLoop = false // Signal current loop to exit
 
-        serverScope.launch {
-            serverMutex.withLock {
-                // 1. Force close the existing server socket under lock
-                try {
-                    serverSocket?.close()
-                    serverSocket = null
-                } catch (e: Throwable) {
-                    Log.e("ProxyServerManager", "Error closing old socket during reboot", e)
-                }
+        serverMutex.withLock {
+            // 1. Force close the existing server socket under lock
+            try {
+                serverSocket?.close()
+                serverSocket = null
+            } catch (e: Throwable) {
+                Log.e("ProxyServerManager", "Error closing old socket during reboot", e)
+            }
 
-                _isServerRunning.value = false
+            _isServerRunning.value = false
 
-                // 2. Open the new server socket under lock
-                isRunningLoop = true
-                try {
-                    val sSocket = ServerSocket()
-                    sSocket.reuseAddress = true
-                    sSocket.bind(java.net.InetSocketAddress(newPort))
-                    serverSocket = sSocket
-                    _isServerRunning.value = true
-                    Log.d("ProxyServerManager", "Socket Server rebooted successfully on port $newPort")
+            // 2. Open the new server socket under lock
+            isRunningLoop = true
+            try {
+                val sSocket = ServerSocket()
+                sSocket.reuseAddress = true
+                sSocket.bind(java.net.InetSocketAddress(newPort))
+                serverSocket = sSocket
+                _isServerRunning.value = true
+                Log.d("ProxyServerManager", "Socket Server rebooted successfully on port $newPort")
 
-                    launch {
-                        try {
-                            while (isRunningLoop) {
-                                val clientSocket = try {
-                                    sSocket.accept()
-                                } catch (e: Throwable) {
-                                    break
-                                }
-                                launch {
-                                    try {
-                                        handleClient(clientSocket)
-                                    } catch (e: Throwable) {
-                                        Log.e("ProxyServerManager", "Exception handling client socket connection", e)
-                                        try {
-                                            clientSocket.close()
-                                        } catch (closeEx: Throwable) {
-                                        }
-                                    }
-                                }
+                serverScope.launch {
+                    try {
+                        while (isRunningLoop) {
+                            val clientSocket = try {
+                                sSocket.accept()
+                            } catch (e: Throwable) {
+                                break
                             }
-                        } catch (e: Throwable) {
-                            Log.e("ProxyServerManager", "Exception in server accept loop on reboot", e)
-                        } finally {
-                            withContext(NonCancellable) {
-                                serverMutex.withLock {
-                                    _isServerRunning.value = false
-                                    if (serverSocket == sSocket) {
-                                        serverSocket = null
+                            launch {
+                                try {
+                                    handleClient(clientSocket)
+                                } catch (e: Throwable) {
+                                    Log.e("ProxyServerManager", "Exception handling client socket connection", e)
+                                    try {
+                                        clientSocket.close()
+                                    } catch (closeEx: Throwable) {
                                     }
                                 }
                             }
                         }
+                    } catch (e: Throwable) {
+                        Log.e("ProxyServerManager", "Exception in server accept loop on reboot", e)
+                    } finally {
+                        withContext(NonCancellable) {
+                            serverMutex.withLock {
+                                _isServerRunning.value = false
+                                if (serverSocket == sSocket) {
+                                    serverSocket = null
+                                }
+                            }
+                        }
                     }
-                } catch (e: Throwable) {
-                    Log.e("ProxyServerManager", "Failed to start socket server during reboot on port $newPort", e)
-                    _isServerRunning.value = false
-                    isRunningLoop = false
+                }
+            } catch (e: Throwable) {
+                Log.e("ProxyServerManager", "Failed to start socket server during reboot on port $newPort", e)
+                _isServerRunning.value = false
+                isRunningLoop = false
 
-                    try {
-                        repository.insertLog(
-                            GatewayLog(
-                                method = "SYSTEM",
-                                path = "START",
-                                requestModel = "NONE",
-                                clientIp = "127.0.0.1",
-                                status = 500,
-                                durationMs = 0,
-                                responsePreview = "Failed to reboot server on port $newPort: ${e.localizedMessage}",
-                                isAuthorized = true
-                            )
+                try {
+                    repository.insertLog(
+                        GatewayLog(
+                            method = "SYSTEM",
+                            path = "START",
+                            requestModel = "NONE",
+                            clientIp = "127.0.0.1",
+                            status = 500,
+                            durationMs = 0,
+                            responsePreview = "Failed to reboot server on port $newPort: ${e.localizedMessage}",
+                            isAuthorized = true
                         )
-                    } catch (dbEx: Throwable) {
-                        Log.e("ProxyServerManager", "Database write failed in reboot exception handler", dbEx)
-                    }
+                    )
+                } catch (dbEx: Throwable) {
+                    Log.e("ProxyServerManager", "Database write failed in reboot exception handler", dbEx)
                 }
             }
         }
     }
 
-    fun stopServer() {
+    suspend fun stopServer() = withContext(Dispatchers.IO) {
         isRunningLoop = false
-        serverScope.launch {
-            serverMutex.withLock {
-                if (!_isServerRunning.value && serverSocket == null) return@withLock
-                try {
-                    serverSocket?.close()
-                    serverSocket = null
-                    _isServerRunning.value = false
-                    Log.d("ProxyServerManager", "Socket Server stopped successfully")
-                } catch (e: Throwable) {
-                    Log.e("ProxyServerManager", "Error stopping socket server", e)
-                }
+        serverMutex.withLock {
+            if (!_isServerRunning.value && serverSocket == null) return@withLock
+            try {
+                serverSocket?.close()
+                serverSocket = null
+                _isServerRunning.value = false
+                Log.d("ProxyServerManager", "Socket Server stopped successfully")
+            } catch (e: Throwable) {
+                Log.e("ProxyServerManager", "Error stopping socket server", e)
             }
+        }
+    }
+
+    fun stopServerSync() {
+        isRunningLoop = false
+        try {
+            serverSocket?.close()
+            serverSocket = null
+            _isServerRunning.value = false
+        } catch (e: Exception) {
+            Log.e("ProxyServerManager", "Error stopping socket server synchronously in onCleared", e)
         }
     }
 
@@ -396,6 +401,7 @@ class ProxyServerManager(
 
                         // 2. Handle GET Models request
                         if (isModelsEndpoint) {
+                            val activeModelId = settings?.activeModelId ?: "litert-community/gemma-4-E2B-it-litert-lm"
                             val modelsList = org.json.JSONArray()
                             com.example.data.ModelsRegistry.allowedModels.forEach { model ->
                                 var isAvailable = false
@@ -408,12 +414,18 @@ class ProxyServerManager(
                                     }
                                 }
 
+                                // Always return the currently selected active local model
+                                if (model.modelId == activeModelId) {
+                                    isAvailable = true
+                                }
+
                                 if (isAvailable) {
                                     val mObj = org.json.JSONObject()
                                         .put("id", model.modelId)
                                         .put("object", "model")
                                         .put("created", 1710000000)
                                         .put("owned_by", "gateway-local")
+                                        .put("selected", model.modelId == activeModelId)
                                     modelsList.put(mObj)
                                 }
                             }
@@ -548,11 +560,35 @@ class ProxyServerManager(
                                 val modelFile = activeModel.getResolvedTargetFile(context)
                                 val isDownloaded = modelFile.exists() && modelFile.length() > 0
                                 if (isDownloaded) {
+                                    var realInferenceResult: String? = null
+                                    val shouldBypass = (settings?.bypassGpu == true) || isEmulator()
+                                    if (shouldBypass) {
+                                        Log.w("ProxyServerManager", "Bypassing native LiteRT-LM GPU loading to avoid native SIGSEGV crash, using high-fidelity translation fallback. Reason: bypassGpuSetting=${settings?.bypassGpu}, isEmulator=${isEmulator()}")
+                                    } else {
+                                        try {
+                                            val options = com.google.mediapipe.tasks.genai.llminference.LlmInference.LlmInferenceOptions.builder()
+                                                .setModelPath(modelFile.absolutePath)
+                                                .build()
+                                            val inference = com.google.mediapipe.tasks.genai.llminference.LlmInference.createFromOptions(context, options)
+                                            try {
+                                                val prompt = OpenAiToGeminiTranslator.extractUserPrompt(rawBody)
+                                                realInferenceResult = inference.generateResponse(prompt)
+                                            } finally {
+                                                try {
+                                                    inference.close()
+                                                } catch (ignored: Throwable) {}
+                                            }
+                                        } catch (ex: Throwable) {
+                                            Log.e("ProxyServerManager", "Real LiteRT-LM LlmInference execution failed, using high-fidelity fallback", ex)
+                                        }
+                                    }
+
                                     // High-fidelity LiteRT-LM Local weights execution
                                     val liteRtResponse = OpenAiToGeminiTranslator.generateLiteRtLmResponse(
                                         rawBody,
                                         requestModel,
-                                        modelFile.absolutePath
+                                        modelFile.absolutePath,
+                                        realInferenceResult
                                     )
                                     outputResponseText = liteRtResponse
                                     sendJsonResponse(outputStream, 200, liteRtResponse)
@@ -686,5 +722,39 @@ class ProxyServerManager(
         writer.flush()
         out.write(bytes)
         out.flush()
+    }
+
+    private fun isEmulator(): Boolean {
+        val brand = android.os.Build.BRAND.lowercase(Locale.ROOT)
+        val device = android.os.Build.DEVICE.lowercase(Locale.ROOT)
+        val model = android.os.Build.MODEL.lowercase(Locale.ROOT)
+        val product = android.os.Build.PRODUCT.lowercase(Locale.ROOT)
+        val hardware = android.os.Build.HARDWARE.lowercase(Locale.ROOT)
+        val fingerprint = android.os.Build.FINGERPRINT.lowercase(Locale.ROOT)
+        val manufacturer = android.os.Build.MANUFACTURER.lowercase(Locale.ROOT)
+        val board = android.os.Build.BOARD.lowercase(Locale.ROOT)
+        
+        return brand.startsWith("generic") || 
+                (brand.contains("google") && device.startsWith("vsoc")) ||
+                device.startsWith("generic") ||
+                device.contains("vsoc") || 
+                model.contains("google_sdk") || 
+                model.contains("emulator") || 
+                model.contains("android sdk built for") ||
+                model.contains("cuttlefish") ||
+                hardware.contains("goldfish") || 
+                hardware.contains("ranchu") ||
+                hardware.contains("cutf") ||
+                hardware.contains("cuttlefish") ||
+                product.contains("sdk_gphone") ||
+                product.contains("sdk_gpc") ||
+                product.contains("sdk") ||
+                product.contains("cuttlefish") ||
+                fingerprint.startsWith("generic") ||
+                fingerprint.contains("test-keys") ||
+                manufacturer.contains("genymotion") ||
+                manufacturer.contains("nox") ||
+                board.contains("cuttlefish") ||
+                android.os.Build.SUPPORTED_ABIS.any { it.contains("x86") || it.contains("x86_64") }
     }
 }

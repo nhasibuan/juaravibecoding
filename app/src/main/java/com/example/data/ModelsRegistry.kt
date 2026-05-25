@@ -39,9 +39,31 @@ data class LocalModelInfo(
             return "/sdcard/Android/data/com.google.ai.edge.gallery/files/$modelFile"
         }
 
-    fun getResolvedTargetFile(context: android.content.Context): java.io.File {
+    fun getResolvedTargetFile(context: android.content.Context, forWriting: Boolean = false): java.io.File {
         if (runtimeType != "litert-lm") return java.io.File("system-managed")
         
+        // Fallback to our own app's files directory which is always accessible and writable
+        val extDir = context.getExternalFilesDir(null)
+        val subPath = when {
+            modelId == "litert-community/gemma-4-E2B-it-litert-lm" -> "Gemma_4_E2B_it/20260325/gemma4_2b_v09_obfus_fix_all_modalities_thinking.litertlm"
+            modelId == "litert-community/gemma-4-E4B-it-litert-lm" -> "Gemma_4_E4B_it/20260325/gemma4_4b_v09_obfus_fix_all_modalities_thinking.litertlm"
+            url.isNotEmpty() && url.contains("/android/") -> {
+                val parts = url.split("/android/")
+                if (parts.size > 1) parts[1] else modelFile
+            }
+            else -> modelFile
+        }
+        val localFile = if (extDir != null) java.io.File(extDir, subPath) else java.io.File(context.filesDir, modelFile)
+
+        if (forWriting) {
+            return localFile
+        }
+
+        // If local downloaded file exists, prefer it
+        if (localFile.exists() && localFile.length() > 0) {
+            return localFile
+        }
+
         val preferredPath = targetFilePath
         val preferredFile = java.io.File(preferredPath)
         try {
@@ -53,21 +75,7 @@ data class LocalModelInfo(
             // SecurityException due to Scoped Storage on API 30+
         }
 
-        // Fallback to our own app's files directory which is always accessible and writable
-        val extDir = context.getExternalFilesDir(null)
-        if (extDir != null) {
-            val subPath = when {
-                modelId == "litert-community/gemma-4-E2B-it-litert-lm" -> "Gemma_4_E2B_it/20260325/gemma4_2b_v09_obfus_fix_all_modalities_thinking.litertlm"
-                modelId == "litert-community/gemma-4-E4B-it-litert-lm" -> "Gemma_4_E4B_it/20260325/gemma4_4b_v09_obfus_fix_all_modalities_thinking.litertlm"
-                url.isNotEmpty() && url.contains("/android/") -> {
-                    val parts = url.split("/android/")
-                    if (parts.size > 1) parts[1] else modelFile
-                }
-                else -> modelFile
-            }
-            return java.io.File(extDir, subPath)
-        }
-        return java.io.File(context.filesDir, modelFile)
+        return localFile
     }
 }
 
@@ -98,7 +106,7 @@ object ModelsRegistry {
             modelFile = "gemma4_2b_v09_obfus_fix_all_modalities_thinking.litertlm",
             runtimeType = "litert-lm",
             description = "A variant of Gemma 4 E2B ready for deployment on Android using LiteRT-LM. It supports multi-modality input, with up to 32K context length.",
-            url = "https://dl.google.com/google-ai-edge-gallery/android/gemma4/20260325/gemma4_2b_v09_obfus_fix_all_modalities_thinking.litertlm",
+            url = "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it.litertlm",
             sizeInBytes = 2538766336,
             minDeviceMemoryInGb = 8,
             llmSupportThinking = true,
@@ -123,7 +131,7 @@ object ModelsRegistry {
             modelFile = "gemma4_4b_v09_obfus_fix_all_modalities_thinking.litertlm",
             runtimeType = "litert-lm",
             description = "A variant of Gemma 4 E4B ready for deployment on Android using LiteRT-LM. It supports multi-modality input, with up to 32K context length.",
-            url = "https://dl.google.com/google-ai-edge-gallery/android/gemma4/20260325/gemma4_4b_v09_obfus_fix_all_modalities_thinking.litertlm",
+            url = "https://huggingface.co/litert-community/gemma-4-E4B-it-litert-lm/resolve/main/gemma-4-E4B-it.litertlm",
             sizeInBytes = 3609411584,
             minDeviceMemoryInGb = 12,
             llmSupportThinking = true,
@@ -137,7 +145,7 @@ object ModelsRegistry {
             modelFile = "gemma-3n-E2B-it-int4.litertlm",
             runtimeType = "litert-lm",
             description = "A variant of Gemma 3n E2B ready for deployment on Android using LiteRT-LM. It supports text, vision, and audio input, with 4096 context length.",
-            url = "https://dl.google.com/google-ai-edge-gallery/android/gemma3n/20260218/gemma-3n-E2B-it-int4.litertlm",
+            url = "https://huggingface.co/google/gemma-3n-E2B-it-litert-lm/resolve/main/gemma-3n-E2B-it-int4.litertlm",
             sizeInBytes = 3655827456,
             minDeviceMemoryInGb = 8,
             llmSupportImage = true,
@@ -150,7 +158,7 @@ object ModelsRegistry {
             modelFile = "gemma-3n-E4B-it-int4.litertlm",
             runtimeType = "litert-lm",
             description = "A variant of Gemma 3n E4B ready for deployment on Android using LiteRT-LM. It supports text, vision, and audio input, with 4096 context length.",
-            url = "https://dl.google.com/google-ai-edge-gallery/android/gemma3n/20260218/gemma-3n-E4B-it-int4.litertlm",
+            url = "https://huggingface.co/google/gemma-3n-E4B-it-litert-lm/resolve/main/gemma-3n-E4B-it-int4.litertlm",
             sizeInBytes = 4919541760,
             minDeviceMemoryInGb = 12,
             llmSupportImage = true,
@@ -163,7 +171,7 @@ object ModelsRegistry {
             modelFile = "gemma3-1b-it-int4.litertlm",
             runtimeType = "litert-lm",
             description = "A variant of google/Gemma-3-1B-IT with 4-bit quantization ready for deployment on Android using LiteRT-LM.",
-            url = "https://dl.google.com/google-ai-edge-gallery/android/gemma3-1b-it/20260217/gemma3-1b-it-int4.litertlm",
+            url = "https://huggingface.co/google/gemma-3-1b-it-litert-lm/resolve/main/gemma-3-1b-it-int4.litertlm",
             sizeInBytes = 584417280,
             minDeviceMemoryInGb = 6,
             accelerators = "gpu,cpu"
@@ -174,7 +182,7 @@ object ModelsRegistry {
             modelFile = "Qwen2.5-1.5B-Instruct_multi-prefill-seq_q8_ekv4096.litertlm",
             runtimeType = "litert-lm",
             description = "A variant of Qwen/Qwen2.5-1.5B-Instruct ready for deployment on Android using LiteRT-LM.",
-            url = "https://dl.google.com/google-ai-edge-gallery/android/qwen2.5/20260210/Qwen2.5-1.5B-Instruct_multi-prefill-seq_q8_ekv4096.litertlm",
+            url = "https://huggingface.co/litert-community/Qwen2.5-1.5B-Instruct-litert-lm/resolve/main/Qwen2.5-1.5B-Instruct_multi-prefill-seq_q8_ekv4096.litertlm",
             sizeInBytes = 1597931520,
             minDeviceMemoryInGb = 6,
             accelerators = "gpu,cpu"
@@ -185,7 +193,7 @@ object ModelsRegistry {
             modelFile = "DeepSeek-R1-Distill-Qwen-1.5B_multi-prefill-seq_q8_ekv4096.litertlm",
             runtimeType = "litert-lm",
             description = "A variant of deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B ready for deployment on Android using LiteRT-LM with high-fidelity reasoning paths.",
-            url = "https://dl.google.com/google-ai-edge-gallery/android/deepseek/20260220/DeepSeek-R1-Distill-Qwen-1.5B_multi-prefill-seq_q8_ekv4096.litertlm",
+            url = "https://huggingface.co/litert-community/DeepSeek-R1-Distill-Qwen-1.5B-litert-lm/resolve/main/DeepSeek-R1-Distill-Qwen-1.5B_multi-prefill-seq_q8_ekv4096.litertlm",
             sizeInBytes = 1833451520,
             minDeviceMemoryInGb = 6,
             llmSupportThinking = true,
@@ -197,7 +205,7 @@ object ModelsRegistry {
             modelFile = "tiny_garden.litertlm",
             runtimeType = "litert-lm",
             description = "Fine-tuned Function Gemma 270M model for Tiny Garden.",
-            url = "https://dl.google.com/google-ai-edge-gallery/android/tiny-garden/20260225/tinygarden.litertlm",
+            url = "https://huggingface.co/litert-community/functiongemma-270m-ft-tiny-garden-litert-lm/resolve/main/tiny_garden.litertlm",
             sizeInBytes = 288964608,
             minDeviceMemoryInGb = 6,
             accelerators = "cpu"
@@ -208,7 +216,7 @@ object ModelsRegistry {
             modelFile = "mobile_actions.litertlm",
             runtimeType = "litert-lm",
             description = "Fine-tuned Function Gemma 270M model for Mobile Actions.",
-            url = "https://dl.google.com/google-ai-edge-gallery/android/mobile-actions/20260218/mobile_actions.litertlm",
+            url = "https://huggingface.co/litert-community/functiongemma-270m-ft-mobile-actions-litert-lm/resolve/main/mobile_actions.litertlm",
             sizeInBytes = 288964608,
             minDeviceMemoryInGb = 6,
             accelerators = "cpu"

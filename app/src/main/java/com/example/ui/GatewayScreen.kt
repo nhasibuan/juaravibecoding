@@ -62,6 +62,7 @@ fun GatewayScreen(
     var showApiKey by remember { mutableStateOf(false) }
     var geminiApiKeyValue by remember { mutableStateOf("") }
     var showGeminiApiKey by remember { mutableStateOf(false) }
+    var bypassGpuValue by remember { mutableStateOf(false) }
 
     // Sync input states when configuration loads up from DB
     LaunchedEffect(settings) {
@@ -69,6 +70,7 @@ fun GatewayScreen(
             portValue = it.port.toString()
             apiKeyValue = it.proxyApiKey
             geminiApiKeyValue = it.geminiApiKey
+            bypassGpuValue = it.bypassGpu
         }
     }
 
@@ -437,6 +439,45 @@ fun GatewayScreen(
                                 .testTag("gemini_api_key_settings_input")
                         )
 
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        // GPU Bypass switch
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(Color.Black.copy(alpha = 0.2f))
+                                .padding(12.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Bypass Native GPU Inference",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White
+                                )
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(
+                                    text = "Forces safe translation simulation fallback on virtual devices or hardware incompatibility.",
+                                    fontSize = 10.sp,
+                                    color = Color.LightGray.copy(alpha = 0.8f)
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Switch(
+                                checked = bypassGpuValue,
+                                onCheckedChange = { bypassGpuValue = it },
+                                colors = SwitchDefaults.colors(
+                                    checkedThumbColor = Color.Black,
+                                    checkedTrackColor = accentCyan,
+                                    uncheckedThumbColor = Color.LightGray,
+                                    uncheckedTrackColor = Color.DarkGray
+                                )
+                            )
+                        }
+
                         Spacer(modifier = Modifier.height(16.dp))
 
                         Button(
@@ -446,7 +487,8 @@ fun GatewayScreen(
                                     apiKeyText = apiKeyValue,
                                     activeModelId = settings?.activeModelId ?: "litert-community/gemma-4-E2B-it-litert-lm",
                                     provider = settings?.targetProvider ?: "CLOUD_GEMINI",
-                                    geminiApiKeyText = geminiApiKeyValue
+                                    geminiApiKeyText = geminiApiKeyValue,
+                                    bypassGpu = bypassGpuValue
                                 )
                                 Toast.makeText(context, "Proxy parameters updated!", Toast.LENGTH_SHORT).show()
                             },
@@ -474,13 +516,26 @@ fun GatewayScreen(
                         modifier = Modifier.padding(bottom = 8.dp)
                     )
 
+                    val activeModelId = settings?.activeModelId ?: "litert-community/gemma-4-E2B-it-litert-lm"
+
                     ModelsRegistry.allowedModels.forEach { model ->
+                        val isSelected = model.modelId == activeModelId
                         Card(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(vertical = 6.dp),
+                                .padding(vertical = 6.dp)
+                                .border(
+                                    width = if (isSelected) 2.dp else 1.dp,
+                                    color = if (isSelected) accentCyan else Color.Transparent,
+                                    shape = RoundedCornerShape(12.dp)
+                                )
+                                .clickable {
+                                    viewModel.changeActiveModel(model.modelId)
+                                    val modeInfo = if (settings?.targetProvider == "LOCAL_VAL") "and set as active local engine!" else "but Cloud routing is currently active"
+                                    Toast.makeText(context, "Active local model set to: ${model.name} ($modeInfo)", Toast.LENGTH_LONG).show()
+                                },
                             colors = CardDefaults.cardColors(
-                                containerColor = Color(0xFF0F172A).copy(alpha = 0.6f)
+                                containerColor = if (isSelected) Color(0xFF1E293B) else Color(0xFF0F172A).copy(alpha = 0.6f)
                             ),
                             shape = RoundedCornerShape(12.dp)
                         ) {
@@ -506,6 +561,21 @@ fun GatewayScreen(
                                                     fontWeight = FontWeight.Bold,
                                                     color = Color.White
                                                 )
+                                                if (isSelected) {
+                                                    Spacer(modifier = Modifier.width(8.dp))
+                                                    val isLocalRouting = settings?.targetProvider == "LOCAL_VAL"
+                                                    Badge(
+                                                        containerColor = if (isLocalRouting) accentGreen else Color(0xFF64748B),
+                                                        contentColor = if (isLocalRouting) Color.Black else Color.White
+                                                    ) {
+                                                        Text(
+                                                            text = if (isLocalRouting) "ACTIVE LOCAL ENGINE" else "STANDBY (CLOUDS ACTIVE)",
+                                                            fontSize = 8.sp,
+                                                            fontWeight = FontWeight.Bold,
+                                                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                                                        )
+                                                    }
+                                                }
                                             }
                                         }
                                     }

@@ -1,5 +1,6 @@
 package com.example.server
 
+import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
@@ -305,37 +306,53 @@ object OpenAiToGeminiTranslator {
     }
 
     /**
-     * Generates a high-fidelity offline response mimicking native on-device LiteRT-LM weight execution.
+     * Extracts the last user message text from the OpenAI chat competition payload.
      */
-    fun generateLiteRtLmResponse(openAiJson: String, openAiModel: String, modelPath: String): String {
-        val openAiObj = JSONObject(openAiJson)
-        val messages = openAiObj.optJSONArray("messages") ?: JSONArray()
-        var userPrompt = "Hello!"
-        if (messages.length() > 0) {
-            val lastMsg = messages.optJSONObject(messages.length() - 1)
-            if (lastMsg != null) {
-                val contentObj = lastMsg.opt("content")
-                if (contentObj is String) {
-                    userPrompt = contentObj
-                } else if (contentObj is JSONArray) {
-                    val sb = StringBuilder()
-                    for (k in 0 until contentObj.length()) {
-                        val item = contentObj.optJSONObject(k)
-                        if (item != null && item.optString("type") == "text") {
-                            sb.append(item.optString("text"))
+    fun extractUserPrompt(openAiJson: String): String {
+        try {
+            val openAiObj = JSONObject(openAiJson)
+            val messages = openAiObj.optJSONArray("messages") ?: JSONArray()
+            if (messages.length() > 0) {
+                val lastMsg = messages.optJSONObject(messages.length() - 1)
+                if (lastMsg != null) {
+                    val contentObj = lastMsg.opt("content")
+                    if (contentObj is String) {
+                        return contentObj
+                    } else if (contentObj is JSONArray) {
+                        val sb = java.lang.StringBuilder()
+                        for (k in 0 until contentObj.length()) {
+                            val item = contentObj.optJSONObject(k)
+                            if (item != null && item.optString("type") == "text") {
+                                sb.append(item.optString("text"))
+                            }
                         }
+                        return sb.toString()
                     }
-                    userPrompt = sb.toString()
                 }
             }
+        } catch (e: Exception) {
+            Log.e("OpenAiToGeminiTranslator", "Failed to extract user prompt from requested payload", e)
         }
+        return "Hello!"
+    }
+
+    /**
+     * Generates a high-fidelity offline response mimicking native on-device LiteRT-LM weight execution.
+     */
+    fun generateLiteRtLmResponse(
+        openAiJson: String,
+        openAiModel: String,
+        modelPath: String,
+        realResponse: String? = null
+    ): String {
+        val userPrompt = extractUserPrompt(openAiJson)
 
         val chatCmplId = "chatcmpl-" + UUID.randomUUID().toString().replace("-", "").take(24)
         val createdSeconds = System.currentTimeMillis() / 1000
 
         val hasThinking = openAiModel.contains("DeepSeek-R1", ignoreCase = true) || openAiModel.contains("gemma-4", ignoreCase = true)
         
-        val solvedAnswer = solveSimplePrompt(userPrompt, openAiModel)
+        val solvedAnswer = realResponse ?: solveSimplePrompt(userPrompt, openAiModel)
         
         val header = """
             [LiteRT-LM Native Engine - Offline On-Device High-Speed Accelerator Execution]

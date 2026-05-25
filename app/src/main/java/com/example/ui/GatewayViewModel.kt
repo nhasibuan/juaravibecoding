@@ -19,16 +19,14 @@ import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
 
-class GatewayViewModel(application: Application) : AndroidViewModel(application) {
-
-    private val database = AppDatabase.getDatabase(application)
-    private val repository = GatewayRepository(
-        database.proxySettingDao(),
-        database.gatewayLogDao()
-    )
-
-    private val serverManager = ProxyServerManager(application, repository)
+class GatewayViewModel(
+    application: Application,
+    private val repository: GatewayRepository,
+    private val serverManager: ProxyServerManager
+) : AndroidViewModel(application) {
 
     // Reactive states from Room
     val settingsState: StateFlow<ProxySetting?> = repository.settingsFlow
@@ -123,7 +121,7 @@ class GatewayViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    fun applySettings(portText: String, apiKeyText: String, activeModelId: String, provider: String, geminiApiKeyText: String) {
+    fun applySettings(portText: String, apiKeyText: String, activeModelId: String, provider: String, geminiApiKeyText: String, bypassGpu: Boolean) {
         viewModelScope.launch {
             try {
                 val validatedPort = portText.toIntOrNull() ?: 8080
@@ -137,7 +135,8 @@ class GatewayViewModel(application: Application) : AndroidViewModel(application)
                         proxyApiKey = apiKeyText.trim(),
                         activeModelId = activeModelId,
                         targetProvider = provider,
-                        geminiApiKey = geminiApiKeyText.trim()
+                        geminiApiKey = geminiApiKeyText.trim(),
+                        bypassGpu = bypassGpu
                     )
                     repository.updateSettings(updated)
 
@@ -190,15 +189,58 @@ class GatewayViewModel(application: Application) : AndroidViewModel(application)
             var outputStream: java.io.FileOutputStream? = null
 
             try {
-                val targetFile = model.getResolvedTargetFile(getApplication())
+                // Always get the resolved path for writing (which directs specifically to app storage space)
+                val targetFile = model.getResolvedTargetFile(getApplication(), forWriting = true)
                 // Create intermediate directories
                 targetFile.parentFile?.mkdirs()
 
-                val url = java.net.URL(urlString)
-                connection = url.openConnection() as java.net.HttpURLConnection
-                connection.connectTimeout = 15000
-                connection.readTimeout = 30000
-                connection.connect()
+                var currentUrl = urlString
+                var redirectCount = 0
+                val maxRedirects = 5
+                var activeConnection: java.net.HttpURLConnection? = null
+
+                while (redirectCount < maxRedirects) {
+                    val url = java.net.URL(currentUrl)
+                    val conn = url.openConnection() as java.net.HttpURLConnection
+                    conn.connectTimeout = 15000
+                    conn.readTimeout = 30000
+                    conn.instanceFollowRedirects = true
+                    // Add User-Agent header which is strictly required by Hugging Face resolve/CDN queries
+                    conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                    conn.connect()
+                    
+                    val responseCode = conn.responseCode
+                    if (responseCode == java.net.HttpURLConnection.HTTP_MOVED_TEMP ||
+                        responseCode == java.net.HttpURLConnection.HTTP_MOVED_PERM ||
+                        responseCode == 301 || responseCode == 302 || responseCode == 303 ||
+                        responseCode == 307 || responseCode == 308) {
+                        
+                        var newUrl = conn.getHeaderField("Location")
+                        if (newUrl != null && newUrl.isNotEmpty()) {
+                            // Resolve relative redirects safely
+                            if (newUrl.startsWith("/")) {
+                                val base = java.net.URL(currentUrl)
+                                newUrl = "${base.protocol}://${base.host}${if (base.port != -1) ":${base.port}" else ""}$newUrl"
+                            } else if (!newUrl.startsWith("http://") && !newUrl.startsWith("https://")) {
+                                val base = java.net.URL(currentUrl)
+                                val basePath = base.path.substringBeforeLast("/", "")
+                                newUrl = "${base.protocol}://${base.host}${if (base.port != -1) ":${base.port}" else ""}$basePath/$newUrl"
+                            }
+                            currentUrl = newUrl
+                            conn.disconnect()
+                            redirectCount++
+                            continue
+                        }
+                    }
+                    activeConnection = conn
+                    break
+                }
+
+                connection = activeConnection
+
+                if (connection == null) {
+                    throw java.io.IOException("Failed to establish connection")
+                }
 
                 if (connection.responseCode != java.net.HttpURLConnection.HTTP_OK) {
                     throw java.io.IOException("HTTP ${connection.responseCode} ${connection.responseMessage}")
@@ -211,12 +253,21 @@ class GatewayViewModel(application: Application) : AndroidViewModel(application)
                 val data = ByteArray(8192)
                 var total: Long = 0
                 var count: Int
+                
+                var lastEmittedPct = 0f
+                var lastEmitTime = 0L
 
                 while (inputStream.read(data).also { count = it } != -1) {
                     total += count
                     if (fileLength > 0) {
                         val progress = total.toFloat() / fileLength
-                        _downloadProgress.value = _downloadProgress.value + (modelId to progress)
+                        val currTime = System.currentTimeMillis()
+                        // Throttle state-flow progress updates to avoid flooding main thread recompositions & ANR/crashes
+                        if (progress - lastEmittedPct >= 0.01f || currTime - lastEmitTime >= 300L) {
+                            _downloadProgress.value = _downloadProgress.value + (modelId to progress)
+                            lastEmittedPct = progress
+                            lastEmitTime = currTime
+                        }
                     }
                     outputStream.write(data, 0, count)
                 }
@@ -272,6 +323,22 @@ class GatewayViewModel(application: Application) : AndroidViewModel(application)
     override fun onCleared() {
         super.onCleared()
         // Stop server thread loop safely to prevent leaks
-        serverManager.stopServer()
+        serverManager.stopServerSync()
+    }
+}
+
+class GatewayViewModelFactory(private val application: Application) : ViewModelProvider.Factory {
+    override fun <T : ViewModel> create(modelClass: Class<T>): T {
+        if (modelClass.isAssignableFrom(GatewayViewModel::class.java)) {
+            val database = AppDatabase.getDatabase(application)
+            val repository = GatewayRepository(
+                database.proxySettingDao(),
+                database.gatewayLogDao()
+            )
+            val serverManager = ProxyServerManager(application, repository)
+            @Suppress("UNCHECKED_CAST")
+            return GatewayViewModel(application, repository, serverManager) as T
+        }
+        throw IllegalArgumentException("Unknown ViewModel class")
     }
 }
