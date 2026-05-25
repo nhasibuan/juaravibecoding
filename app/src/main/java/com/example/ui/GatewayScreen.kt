@@ -531,8 +531,8 @@ fun GatewayScreen(
                                 )
                                 .clickable {
                                     viewModel.changeActiveModel(model.modelId)
-                                    val modeInfo = if (settings?.targetProvider == "LOCAL_VAL") "and set as active local engine!" else "but Cloud routing is currently active"
-                                    Toast.makeText(context, "Active local model set to: ${model.name} ($modeInfo)", Toast.LENGTH_LONG).show()
+                                    val modeInfo = if (settings?.targetProvider == "LOCAL_VAL") "and set as default fallback local engine!" else "but Cloud routing is currently active"
+                                    Toast.makeText(context, "Default fallback set to: ${model.name} ($modeInfo)", Toast.LENGTH_LONG).show()
                                 },
                             colors = CardDefaults.cardColors(
                                 containerColor = if (isSelected) Color(0xFF1E293B) else Color(0xFF0F172A).copy(alpha = 0.6f)
@@ -569,7 +569,7 @@ fun GatewayScreen(
                                                         contentColor = if (isLocalRouting) Color.Black else Color.White
                                                     ) {
                                                         Text(
-                                                            text = if (isLocalRouting) "ACTIVE LOCAL ENGINE" else "STANDBY (CLOUDS ACTIVE)",
+                                                            text = if (isLocalRouting) "DEFAULT LOCAL ENGINE" else "DEFAULT STANDBY (CLOUDS ACTIVE)",
                                                             fontSize = 8.sp,
                                                             fontWeight = FontWeight.Bold,
                                                             modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)

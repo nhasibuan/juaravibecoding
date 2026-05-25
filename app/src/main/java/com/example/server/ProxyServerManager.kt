@@ -566,20 +566,11 @@ class ProxyServerManager(
                                         Log.w("ProxyServerManager", "Bypassing native LiteRT-LM GPU loading to avoid native SIGSEGV crash, using high-fidelity translation fallback. Reason: bypassGpuSetting=${settings?.bypassGpu}, isEmulator=${isEmulator()}")
                                     } else {
                                         try {
-                                            val options = com.google.mediapipe.tasks.genai.llminference.LlmInference.LlmInferenceOptions.builder()
-                                                .setModelPath(modelFile.absolutePath)
-                                                .build()
-                                            val inference = com.google.mediapipe.tasks.genai.llminference.LlmInference.createFromOptions(context, options)
-                                            try {
-                                                val prompt = OpenAiToGeminiTranslator.extractUserPrompt(rawBody)
-                                                realInferenceResult = inference.generateResponse(prompt)
-                                            } finally {
-                                                try {
-                                                    inference.close()
-                                                } catch (ignored: Throwable) {}
-                                            }
+                                            val prompt = OpenAiToGeminiTranslator.extractUserPrompt(rawBody)
+                                            // Secure lazy native class execution wrapper prevents unsatisfied link crash or initialization crash on startup
+                                            realInferenceResult = NativeLlmRunner.executeInference(context, modelFile.absolutePath, prompt, rawBody)
                                         } catch (ex: Throwable) {
-                                            Log.e("ProxyServerManager", "Real LiteRT-LM LlmInference execution failed, using high-fidelity fallback", ex)
+                                            Log.e("ProxyServerManager", "Native LLM execution/loading failed (UnsatisfiedLinkError, unsupported architecture, or runtime error), using fallback", ex)
                                         }
                                     }
 
@@ -736,25 +727,82 @@ class ProxyServerManager(
         
         return brand.startsWith("generic") || 
                 (brand.contains("google") && device.startsWith("vsoc")) ||
+                brand.contains("redroid") ||
                 device.startsWith("generic") ||
                 device.contains("vsoc") || 
+                device.contains("redroid") || 
                 model.contains("google_sdk") || 
                 model.contains("emulator") || 
                 model.contains("android sdk built for") ||
                 model.contains("cuttlefish") ||
+                model.contains("redroid") || 
                 hardware.contains("goldfish") || 
                 hardware.contains("ranchu") ||
                 hardware.contains("cutf") ||
                 hardware.contains("cuttlefish") ||
+                hardware.contains("redroid") || 
+                hardware.contains("qemu") || 
                 product.contains("sdk_gphone") ||
                 product.contains("sdk_gpc") ||
                 product.contains("sdk") ||
                 product.contains("cuttlefish") ||
+                product.contains("redroid") || 
+                product.contains("vbox") || 
                 fingerprint.startsWith("generic") ||
                 fingerprint.contains("test-keys") ||
+                fingerprint.contains("release-keys") && (brand.contains("generic") || brand.contains("unknown")) ||
                 manufacturer.contains("genymotion") ||
                 manufacturer.contains("nox") ||
+                manufacturer.contains("google") && model.contains("sdk") ||
                 board.contains("cuttlefish") ||
+                board.contains("redroid") ||
                 android.os.Build.SUPPORTED_ABIS.any { it.contains("x86") || it.contains("x86_64") }
+    }
+}
+
+/**
+ * Lazy class loader wrapper design pattern for native MediaPipe model engine execution.
+ * Prevents unsatisfied linked library error of UnsatisfiedLinkError or other instantiation
+ * exceptions/crashes from terminating the parent JVM on startup / network request phase or under emulators.
+ */
+object NativeLlmRunner {
+    fun executeInference(context: Context, modelPath: String, prompt: String, rawBody: String): String {
+        val optionsBuilder = com.google.mediapipe.tasks.genai.llminference.LlmInference.LlmInferenceOptions.builder()
+            .setModelPath(modelPath)
+
+        try {
+            val reqObj = org.json.JSONObject(rawBody)
+            if (reqObj.has("temperature")) {
+                val temp = reqObj.getDouble("temperature").toFloat()
+                optionsBuilder.setTemperature(temp)
+            }
+            if (reqObj.has("max_tokens")) {
+                val maxTok = reqObj.getInt("max_tokens")
+                optionsBuilder.setMaxTokens(maxTok)
+            } else if (reqObj.has("max_completion_tokens")) {
+                val maxTok = reqObj.getInt("max_completion_tokens")
+                optionsBuilder.setMaxTokens(maxTok)
+            }
+            if (reqObj.has("top_k")) {
+                val tk = reqObj.getInt("top_k")
+                optionsBuilder.setTopK(tk)
+            }
+            if (reqObj.has("seed")) {
+                val seedVal = reqObj.getInt("seed")
+                optionsBuilder.setRandomSeed(seedVal)
+            }
+        } catch (optEx: Throwable) {
+            Log.w("NativeLlmRunner", "Optional generation parameters parsing skipped or unsupported", optEx)
+        }
+
+        val options = optionsBuilder.build()
+        val inference = com.google.mediapipe.tasks.genai.llminference.LlmInference.createFromOptions(context, options)
+        try {
+            return inference.generateResponse(prompt)
+        } finally {
+            try {
+                inference.close()
+            } catch (ignored: Throwable) {}
+        }
     }
 }
