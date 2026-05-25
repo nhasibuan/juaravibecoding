@@ -12,7 +12,8 @@
 | Workstream | Status | Where |
 |---|---|---|
 | A. Replace `generateLiteRtLmResponse` with real LiteRT-LM inference | **✅ Implemented** | [PR #1 `litert-lm-real-inference`](https://github.com/nhasibuan/juaravibecoding/pull/1) |
-| B. Tighten model routing so `/v1/models` matches dispatch | **✅ Implemented** | PR #2 `routing-correctness` |
+| B. Tighten model routing so `/v1/models` matches dispatch | **✅ Implemented** | [PR #2 `routing-correctness`](https://github.com/nhasibuan/juaravibecoding/pull/2) |
+| C. Housekeeping: real DB migrations, README correctness, remove vestigial code | **✅ Implemented** | PR #3 `housekeeping-and-minor-features` |
 
 **Evidence that A is done in PR #1:**
 
@@ -511,21 +512,160 @@ A reviewer can verify each of the following from the code and CI alone:
 
 ---
 
-## 11. Out-of-scope follow-ups
+## 11. Out-of-scope follow-ups — ordered roadmap
 
-Tracked separately; *not* in this plan's PRs:
+After PR #1 (real LiteRT-LM), PR #2 (routing correctness), and PR #3 (housekeeping) land, the remaining work is sequenced below. Each item is sized to fit a single PR. Items are listed in the recommended landing order — earlier PRs unblock later ones.
 
-- Streaming (SSE) responses for `/v1/chat/completions` with `stream: true` (would use `Conversation.sendMessageAsync` + `MessageCallback` per gallery's pattern).
-- Function calling / tool use translation (gallery uses LiteRT-LM `ToolProvider`).
-- Multi-turn KV cache reuse across requests in the LiteRT engine (currently every request rebuilds the conversation).
-- AICore runtime implementation.
-- Replacing `fallbackToDestructiveMigration()` in `AppDatabase` with real migrations.
-- README correctness pass (secrets-plugin path, `local.properties` references, scoped-storage caveat, simulator → real LiteRT).
-- Rationalizing the namespace `com.example` vs applicationId `com.aistudio.aiproxygateway.jxrqtm`.
-- Per-model independent provider selection (so a LiteRT model and a cloud model can both be reachable from the same gateway without flipping `targetProvider`).
-- Image / audio modality input plumbing in `extractLocalEngineRequest` (`gemma-4-*` and `gemma-3n-*` advertise these but v1 ignores non-text parts).
-- NPU backend re-enablement once `nativeLibraryDir` plumbing is verified across vendor plug-ins.
-- Removing the unused local `EngineConfig` data class in `ModelsRegistry.kt` (vestigial; left in PR #1 to keep the diff minimal).
+### PR #4 — NPU backend re-enablement (small)
+
+**What.** Add a `enableNpuBackend: Boolean = false` column to `proxy_settings` (Room MIGRATION_2_3), expose a toggle in `GatewayScreen`'s **Server parameters** card, and let `LiteRtLmEngine.pickBackend` honor it. When the toggle is off (default), NPU stays silently downgraded to CPU as it is today.
+
+**Files.** `data/ProxySetting.kt` (+1 column), `data/AppDatabase.kt` (bump to v3 + `MIGRATION_2_3`), `inference/LiteRtLmEngine.kt` (read `Settings.enableNpuBackend`), `ui/GatewayScreen.kt` (one Switch row), `ui/GatewayViewModel.kt` (extend `applySettings`).
+
+**Risk.** Low. Default-off keeps current behavior.
+
+**Acceptance.** Flipping the toggle, restarting the server, and submitting a request causes `Backend.NPU(...)` to be constructed and the response `system_fingerprint` to read `litertlm:npu:<ms>`. On devices without an NPU plug-in, the engine throws on initialize and returns a clean `engine_load_failed` error rather than crashing the app.
+
+**Open question.** Whether to surface the *actually used* backend back into `applicationInfo.nativeLibraryDir` per-ABI; the current `Backend.NPU(nativeLibraryDir = ...)` parameter is read directly from `Context`. No additional per-ABI plumbing should be needed.
+
+---
+
+### PR #5 — Multi-turn KV cache reuse (small–medium)
+
+**What.** Today every request rebuilds `Conversation` from scratch. For OpenAI clients that always send full history, this throws away the engine's internal KV cache for the prefix. Detect when the new history is a strict prefix-extension of the previous request's history (same model + same earlier messages) and **continue the existing conversation** by `sendMessage`-ing only the trailing user turn, instead of recreating it.
+
+**Files.** `inference/LiteRtLmEngine.kt` only. Add a `LastConversationKey(modelId, backend, historyHash, lastUserTurnHash)` cache and a prefix-extension predicate.
+
+**Risk.** Medium — cache invalidation is the classic hard problem. If we falsely match, the model sees stale state. Conservative invalidation: any deviation in system instruction, sampler config, or any non-trailing message → recreate.
+
+**Acceptance.** A unit test against a fake `Engine` shows that two consecutive requests sharing identical first-N-1 messages produce one `createConversation` call and two `sendMessage` calls; flipping any earlier message produces two `createConversation` calls.
+
+**Dependency.** None — independent of PR #4.
+
+**Performance gain.** Substantial for chat clients: the prefill cost (tokenizing and processing the history) is amortized. With Gemma3-1B-IT this can drop second-turn latency from seconds to a few hundred milliseconds.
+
+---
+
+### PR #6 — Streaming (SSE) responses (medium–large)
+
+**What.** Honor `stream: true` in chat-completion requests and respond with `text/event-stream` deltas in the OpenAI streaming format. Use `Conversation.sendMessageAsync(...)` per gallery's pattern.
+
+**Files.**
+- `inference/LiteRtLmEngine.kt`: add `generateStreaming(prompt, onDelta, onDone, onError)` method using `sendMessageAsync` + `MessageCallback`.
+- `server/OpenAiToGeminiTranslator.kt`: add `streamingDeltaJson(deltaText, model)` and `streamingFinishJson(model, finishReason)` helpers producing the OpenAI delta envelope.
+- `server/ProxyServerManager.kt`: detect `"stream": true` in the request body, switch the response writer to `Transfer-Encoding: chunked` + `Content-Type: text/event-stream`, write `data: {...}\n\n` frames per delta and a final `data: [DONE]\n\n`. Cloud streaming uses Gemini's `streamGenerateContent` over OkHttp's chunked response and does the same SSE shaping.
+- New: `server/SseWriter.kt` to encapsulate the SSE write protocol (heartbeat / flush / proper line endings).
+
+**Risk.** Medium-high. Three things to get right: (1) cooperative cancellation when the client disconnects mid-stream — must call `Conversation.cancelProcess()` and close the socket; (2) backpressure — `MessageCallback.onMessage` arrives on the SDK's thread, the SSE writer must serialize through a channel; (3) keep-alive — include periodic `: keep-alive\n\n` comments to prevent intermediate proxies from closing idle connections.
+
+**Acceptance.** `curl -N` against a `stream: true` request prints incremental tokens. Closing the curl mid-stream invokes `cancelProcess()` (verifiable via Logcat). The non-streaming path is unchanged.
+
+**Dependency.** Stacks on PR #5 — both touch `LiteRtLmEngine`'s public surface; landing #5 first prevents merge conflicts.
+
+---
+
+### PR #7 — Multimodal input plumbing (medium)
+
+**What.** OpenAI chat completions allow `content` to be an array of typed parts (`text`, `image_url`, `input_audio`). Today our `extractLocalEngineRequest` only collects `text` parts and silently drops the rest. Plumb image and audio bytes into `Content.ImageBytes` / `Content.AudioBytes` for LiteRT-LM models that advertise `llmSupportImage` / `llmSupportAudio`.
+
+**Files.**
+- `server/OpenAiToGeminiTranslator.kt`: extend `extractLocalEngineRequest` to decode `image_url` (data-URI base64 only, http URLs deferred to PR #N) and `input_audio` (base64 PCM/MP3 bytes per the OpenAI spec) into a `LocalEngineRequest.attachments: List<Attachment>`. Cloud path: extend `translateRequest` to emit Gemini `inlineData` parts.
+- `inference/LiteRtLmEngine.kt`: `EngineConfig` now passes non-null `visionBackend` / `audioBackend` when the registered `LocalModelInfo` advertises support and the request contains attachments. Pass `Contents.of(listOf(Content.ImageBytes, Content.AudioBytes, Content.Text))` to `sendMessage`. Per gallery: image first, audio next, text last.
+- `data/ModelsRegistry.kt`: no change; existing `llmSupportImage` / `llmSupportAudio` fields gate which models accept attachments.
+
+**Risk.** Medium. Image decoding is bounded (data URI parsing is mechanical); but real-world clients also send `image_url: { url: "https://..." }` which means the gateway must download. Defer http-URL fetching to a later PR; for v1 reject http URLs with `400 unsupported_image_source` and accept only `data:` URIs.
+
+**Acceptance.** A request with a `data:image/png;base64,...` part to a `gemma-3n-E4B-it` model produces a non-trivial response that references the image content (smoke-tested manually). A text-only model receiving an image returns `400 model_does_not_support_image`.
+
+**Dependency.** None.
+
+---
+
+### PR #8 — Per-model independent provider selection (medium)
+
+**What.** Today there's a single global `targetProvider` setting. A user who wants both `gemini-2.5-flash` (cloud) *and* `litert-community/Gemma3-1B-IT` (local) reachable from the same gateway has to flip a setting per request. Make provider selection implicit from the requested `modelId`'s `runtimeType`: if the request asks for a CLOUD model, route cloud; for a LITERT_LM model, route local. The `targetProvider` setting becomes a *default for the UI* (which model card is highlighted, what `/v1/models` advertises if no key is configured) but no longer a routing gate.
+
+**Files.**
+- `server/ModelRouter.kt`: drop the `ProviderMismatch` check; the `RuntimeType` of the resolved entry alone determines the route.
+- `server/ProxyServerManager.kt`: `/v1/models` now lists every entry whose backing resource is available (cloud key OR weights on disk OR neither for AICore).
+- `data/ProxySetting.kt`: rename `targetProvider` → `defaultRuntimePreference` and document that it's UI-only. Add MIGRATION_3_4.
+- `ui/GatewayScreen.kt`: relabel the toggle from "Routing strategy" to "UI default — does not gate routing".
+
+**Risk.** Medium. This is a breaking semantic change: clients that relied on the gateway rejecting cloud requests because the provider was set to LOCAL_VAL will now get cloud responses. Document loudly in CHANGELOG.
+
+**Acceptance.** With `defaultRuntimePreference = LOCAL_VAL`, `gemini-2.5-flash` requests still route to the cloud (assuming a key is configured). With `defaultRuntimePreference = CLOUD_GEMINI`, `Gemma3-1B-IT` requests still route to the local engine (assuming weights are downloaded). `ProviderMismatch` is gone from `RoutingError`; `ModelRouterTest` is rewritten accordingly.
+
+**Dependency.** Should land *after* PR #6 (streaming) so the streaming path also benefits from the simplified routing.
+
+---
+
+### PR #9 — Function calling / tool use (large)
+
+**What.** Translate OpenAI's `tools` / `tool_choice` request fields and `tool_calls` response fields to and from LiteRT-LM's `ToolProvider` and Gemini's `functionDeclarations`. Gallery has a complete reference implementation in `customtasks/agentchat/IntentHandler.kt` and friends.
+
+**Files (estimated).**
+- `server/OpenAiToGeminiTranslator.kt`: massive extension. Roughly +200 LOC.
+- `inference/LiteRtLmEngine.kt`: accept a `tools: List<ToolProvider>` param; pass to `ConversationConfig`.
+- New: `server/ToolBridge.kt` to convert OpenAI's loose JSON-schema tool definitions to LiteRT-LM's `ToolProvider` interface.
+- Cloud: extend `translateRequest` / `translateResponse` for Gemini `functionCall` / `functionResponse` parts.
+
+**Risk.** High. The OpenAI spec for tool calls is ambiguous on a few edge cases (parallel calls, tool-error propagation). Gallery's implementation is the most authoritative reference. Plan to lift their adapter wholesale.
+
+**Acceptance.** A canonical OpenAI tool-use round trip (assistant requests `tool_calls` → user replies with `role: tool, tool_call_id, content`) succeeds end-to-end against a Gemma-4 model on-device and against `gemini-2.5-flash` in cloud mode. Integration test in Robolectric with a fake `Engine`.
+
+**Dependency.** Stacks on PR #7 (multimodal) — both touch the translator's content-part handling. Land #7 first.
+
+---
+
+### PR #10 — AICore runtime implementation (large)
+
+**What.** Replace the `RoutingError.AiCoreUnsupported` short-circuit with a real handler that calls `com.google.android.ai.aicore.GenerativeModel` (Gemini Nano via AICore). Gallery has the full lifecycle in `runtime/aicore/AICoreModelHelper.kt`, including model availability checks and feature-flag gating.
+
+**Files.**
+- New: `inference/AICoreEngine.kt`, mirroring gallery's `AICoreModelHelper`.
+- `server/ProxyServerManager.kt`: replace the `is RoutedModel.AiCore -> 501` branch with a real dispatch.
+- `data/ModelsRegistry.kt`: the AICore entries already exist; no schema change needed.
+- `app/build.gradle.kts`: add `com.google.android.ai.aicore:aicore` dependency.
+
+**Risk.** High. AICore requires:
+- Pixel 8/9-class hardware with AICore enabled;
+- An off-the-shelf signing config matching Google's Play Store cert for the "Aicore Allowlist";
+- Per-feature opt-in from Google to use specific model preferences.
+
+This is the only PR in this roadmap that may not be testable on emulators or non-Pixel devices. Plan to land behind a runtime feature check that returns the existing `not_implemented` 501 on devices that lack AICore.
+
+**Acceptance.** On an allowlisted Pixel, requesting `aicore-gemma-4-e2b` returns a real generated response with `system_fingerprint = "aicore:nano:<ms>"`. On any other device, the existing 501 path remains.
+
+**Dependency.** None functionally, but realistically should land last because (a) it's the most environment-fragile and (b) it duplicates a lot of gallery code that may upstream a thin SDK.
+
+---
+
+### PR #11 — Namespace ⇄ applicationId rationalization (small, breaking)
+
+**What.** Decide whether to:
+- (a) Rename the Kotlin package from `com.example` to `com.aistudio.aiproxygateway.gateway` (or similar) so the namespace matches the applicationId family. Requires touching every `.kt` file's package declaration.
+- (b) Keep `com.example` and trim the applicationId suffix — `applicationId = "com.aistudio.aiproxygateway"` (no random suffix). This option breaks every installed copy; users have to uninstall + reinstall.
+
+**Files (option a).** Every Kotlin file's package line, plus matching directory moves. ~30 files.
+
+**Risk.** Low technical risk for option (a); option (b) breaks user installs and may break Play Store delivery if the app was published.
+
+**Acceptance.** Build + tests green. APK metadata shows the cleaned-up applicationId with no `jxrqtm` suffix.
+
+**Open question.** This is a *user decision*, not a technical one. Need to confirm the chosen name and whether to break installs. Until that decision is made, this PR stays open as a tracking issue.
+
+---
+
+### Recommended landing order
+
+1. **PR #4** — NPU re-enable. Smallest. Safe. Default-off.
+2. **PR #5** — KV cache reuse. Small but high-value perf win.
+3. **PR #6** — Streaming. Big but contained, stacks cleanly on #5.
+4. **PR #7** — Multimodal. Independent of #6 but easier to reason about after streaming lands because both touch `LiteRtLmEngine`'s public surface.
+5. **PR #8** — Per-model provider. Breaking semantic change; better to land after #4-#7 stabilize.
+6. **PR #9** — Function calling. Largest non-AICore item; benefits from #7's translator extensions.
+7. **PR #11** — Namespace. Land any time, but involves a user decision so likely last.
+8. **PR #10** — AICore. Most environment-fragile; consider landing only after a Pixel device is available for verification.
 
 ---
 

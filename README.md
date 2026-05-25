@@ -1,427 +1,392 @@
-# AI Proxy Gateway (Professional Product Documentation & System Guide)
+# AI Proxy Gateway (Documentation & System Guide)
 
-Welcome to the **AI Proxy Gateway**, a high-performance Android middleware designed to bridge standard OpenAI-compatible applications with Google Gemini models. This application runs entirely on an Android target (device or emulator), providing an ultra-low-latency local HTTP proxy server that intercepts standard OpenAI REST API requests, translates them to Google Gemini formats, forwards them to the active engine (**LiteRT-LM** or **Cloud Gemini APIs**), and returns the results back to the caller in perfect OpenAI format.
-
----
-
-## 🔗 Platform Links & Live Resources
-
-*   **Development App URL:** [https://ais-dev-vmxiqlf5b4ebx5bxc5vziy-172365368647.asia-east1.run.app](https://ais-dev-vmxiqlf5b4ebx5bxc5vziy-172365368647.asia-east1.run.app)
-*   **Shared App Preview URL:** [https://ais-pre-vmxiqlf5b4ebx5bxc5vziy-172365368647.asia-east1.run.app](https://ais-pre-vmxiqlf5b4ebx5bxc5vziy-172365368647.asia-east1.run.app)
-*   **Official Google Gemini API Reference:** [https://ai.google.dev/gemini-api/docs](https://ai.google.dev/gemini-api/docs)
-*   **OpenAI Chat API Reference:** [https://developers.openai.com/api/reference/resources/chat](https://developers.openai.com/api/reference/resources/chat)
-*   **OpenAI Chat Responses Reference:** [https://developers.openai.com/api/reference/resources/responses](https://developers.openai.com/api/reference/resources/responses)
-*   **Google AI Edge - LiteRT Portal:** [https://ai.google.dev/edge/litert](https://ai.google.dev/edge/litert)
-*   **LiteRT GitHub Repository:** [https://github.com/google-ai-edge/LiteRT](https://github.com/google-ai-edge/LiteRT)
-*   **LiteRT-LM Developer Portal:** [https://ai.google.dev/edge/litert-lm](https://ai.google.dev/edge/litert-lm)
-*   **LiteRT-LM Project Repository:** [https://github.com/google-ai-edge/LiteRT-LM](https://github.com/google-ai-edge/LiteRT-LM)
-*   **Google AI Edge Overview:** [https://ai.google.dev/edge](https://ai.google.dev/edge)
-*   **Google AI Edge Models Gallery:** [https://github.com/google-ai-edge/gallery](https://github.com/google-ai-edge/gallery)
-*   **Hostings-HuggingFace LiteRT Models Library:** [https://huggingface.co/litert-community](https://huggingface.co/litert-community)
+The **AI Proxy Gateway** is an Android app that runs a local HTTP server speaking the OpenAI Chat Completions protocol and forwarding requests to either the Google Gemini cloud REST API or to an on-device LiteRT-LM engine. Existing OpenAI-compatible clients can change their base URL to the device's IP and port (e.g. `http://192.168.1.144:8080/v1`) and use Gemini or local models with no other code changes.
 
 ---
 
-## 1. Detailed Product Requirement Document (PRD)
+## 🔗 Reference links
 
-### 1.1 Product Vision & Business Context
-Many legacy, enterprise, and newly-engineered server integrations are built around the proprietary OpenAI API standard (`POST /v1/chat/completions`). Adopting alternative high-quality models (such as Google’s Gemini series) typically requires massive, invasive rewrites of existing production codebases. Additionally, routing high volumes of cloud AI requests introduces substantial operational API billing costs, high network dependency risks, and system compliance hurdles concerning user data leakage and data residency.
-
-The **AI Proxy Gateway** solves these pain points by behaving as an intelligent local network hub on any Wi-Fi or local IP network:
-*   **Zero-Invasive Integration:** Existing client software can simply alter their API base URL to the local Android gateway IP address and port (e.g., `http://192.168.1.144:8080/v1`). No client code rewrites are required.
-*   **Cost Control & Offline Resiliency:** Teams can switch between secure **Cloud Gemini API** endpoints and on-device **LiteRT-LM** configurations with a single tap, shielding organizations from high API billing and supporting total offline functionality.
-*   **Dynamic Provider Switching:** Teams can seamlessly switch routing modes directly under the **Gateway Configuration** panel. Tapping these choices updates a centralized configuration record in a thread-safe Room SQLite database. The live background socket handler actively reads this persistent state for every raw incoming HTTP client request, swapping the execution pipeline between OkHttp cloud tunnels and native local on-device processing instantly without requiring client updates, server restarts, or device reboots.
-*   **Total Data Protection:** Highly confidential inputs can be translated and executed offline without sending any raw data outside the local area network (LAN).
-
-### 1.2 Target Personas
-*   **Network & Software Developers:** Require a seamless, standard, and highly compliant endpoint matching the exact OpenAI API specifications.
-*   **System & Privacy Administrators:** Require clear traffic logging, request auditing, security token management, and detailed latency diagnostics.
-*   **Field Operations Managers:** Want a simple mobile dashboard to run networks off-grid, monitor active transactions, and execute localized model files directly without cloud overheads.
-
-### 1.3 Core Product Features & Requirements
-*   **OpenAI v1 Emulation Protocol:** Implements standard REST endpoints:
-    *   `POST /v1/chat/completions` (full parameter coverage for messages/contents, models, temperatures, token limits).
-    *   `GET /v1/models` (exposes valid available local/cloud model IDs).
-*   **Robust Multi-Provider Routing:**
-    *   **Cloud Gemini:** Proxying inbound requests directly to online Google Gemini Models using standard API keys.
-    *   **On-Device LiteRT-LM Engine:** Integrates direct execution of highly efficient local `*.litertlm` (LiteRT Language Model) weights downloaded or sideloaded across Android storage directories. When LiteRT-LM is enabled, standard OpenAI REST requests are processed directly on-device by loading model weights from local directories (e.g., inside Scoped or Shared Storage) on high-speed Android accelerators (GPU/CPU). If physical model files are not yet downloaded, the backend returns a clear, descriptive HTTP 400 Bad Request error specifying that model weights are missing and must be downloaded first. No fake simulations or mock fallbacks are used.
-*   **LiteRT-LM Model Storage Path Manager:** Explicit directory tracking across Android storage directories (e.g. `/sdcard/Android/data/...`) to let downstream runtimes target downloadable files directly.
-*   **Integrated Local Download Downloader:** A dynamic background download engine that fetches `*.litertlm` models direct from hosting locations, reports accurate fractional download speeds, saves them on Android storage targets, and automatically activates the downloaded model on completion.
-*   **Live Sockets Lifecycle Controls:** Safe network server socket operations on dynamic ports configured via local UI.
-*   **Real-time Traffic Auditing Console:** Persistent logging and inspection interface listing system responses, durations, path methods, performance indicators, and caller IP addresses.
-
-### 1.4 Active Engine Comparison
-To fit different operational, privacy, and cost profiles, teams can select among the two active engines on the gateway:
-
-| Attribute | Cloud Gemini APIs (`CLOUD_GEMINI`) | Downloadable LiteRT-LM (`LOCAL_VAL`) |
-| :--- | :--- | :--- |
-| **Operational Mode** | Offloads processing to secure Google cloud servers. | Loads and executes model binaries natively on the device. |
-| **Internet Dependency** | Yes (Active network internet/cellular connection is mandatory). | No (100% offline local loop operation). |
-| **Hardware Overhead** | Minimal (Standard networking, minimal battery impact). | Moderate-High (Consumes CPU/GPU and system RAM based on model size). |
-| **Data Residency** | Input transmitted securely to Google Gemini API servers. | 100% confidential. No data ever leaves the physical target device. |
-| **Capabilities Profile** | Access to complex ultra-large models (e.g., Gemini 2.5 Pro / Flash). | Run highly-optimized small edge models (Gemma-3n/4, Qwen-2.5, DeepSeek-Distill). |
-| **Cost Profile** | Standard API token billing rates of Google Cloud AI. | Free local compute. Absolute zero API token bills. |
+*   **Google Gemini API:** [https://ai.google.dev/gemini-api/docs](https://ai.google.dev/gemini-api/docs)
+*   **OpenAI Chat Completions reference:** [https://platform.openai.com/docs/api-reference/chat](https://platform.openai.com/docs/api-reference/chat)
+*   **Google AI Edge — LiteRT:** [https://ai.google.dev/edge/litert](https://ai.google.dev/edge/litert)
+*   **LiteRT-LM developer portal:** [https://ai.google.dev/edge/litert-lm](https://ai.google.dev/edge/litert-lm)
+*   **LiteRT-LM repository:** [https://github.com/google-ai-edge/LiteRT-LM](https://github.com/google-ai-edge/LiteRT-LM)
+*   **Reference Android implementation (gallery):** [https://github.com/google-ai-edge/gallery](https://github.com/google-ai-edge/gallery)
+*   **LiteRT model hosting:** [https://huggingface.co/litert-community](https://huggingface.co/litert-community)
 
 ---
 
-## 2. Technical Architecture & Blueprint
+## 1. Product overview
 
-### 2.1 System Architecture
+### 1.1 Why this exists
 
-The application uses an **MVVM (Model-View-ViewModel)** architectural pattern. Data streams bind reactively through Jetpack Compose state collection, and all intensive transactions are offloaded to asynchronous coroutine scopes.
+A lot of code, tooling, and SDKs target OpenAI's `POST /v1/chat/completions`. Switching that work to Gemini usually requires touching every client. The gateway sits on a phone or emulator, listens on a local port, and:
+
+*   accepts standard OpenAI requests verbatim;
+*   translates them to Gemini cloud REST or to the LiteRT-LM Kotlin SDK;
+*   returns the answer in the OpenAI response shape, so callers see no difference.
+
+Switching cloud → local is a single tap in the app — no client redeploy, no server restart. Local mode keeps prompts on the device.
+
+### 1.2 Core capabilities
+
+*   **OpenAI-compatible HTTP endpoints**
+    *   `POST /v1/chat/completions` — full chat-completion shape, including `messages`, `model`, `temperature`, `max_tokens` / `max_completion_tokens`, `top_p`, `top_k`.
+    *   `GET /v1/models` — lists only the model ids that will actually route successfully under the current settings (cloud entries appear when a Gemini key is configured; LiteRT entries appear when their `.litertlm` weight file is on disk).
+*   **Two routing destinations**
+    *   `CLOUD_GEMINI` — proxies to `https://generativelanguage.googleapis.com/v1beta/models/{id}:generateContent` over OkHttp.
+    *   `LOCAL_VAL` — runs `com.google.ai.edge.litertlm:litertlm-android` on the device's CPU or GPU. Mirrors the canonical lifecycle from `google-ai-edge/gallery`'s `LlmChatModelHelper`.
+*   **Honest error envelopes.** Unknown model id → `400 model_not_found`. Cloud model with no key → `500 gateway_setup_error`. LiteRT model whose weights aren't on the device → `400 model_not_found` with the expected file path. Provider/runtime mismatch → `400 provider_mismatch`. AICore entries are listed but not yet implemented and return `501 not_implemented`.
+*   **Strict model-id resolution.** No silent fallback to a "nearest" model. Aliases (`gpt-4o-mini`, `gpt-3.5-turbo` → `gemini-2.5-flash`) are matched verbatim and their resolution is documented.
+*   **Local model downloader** with live progress for `*.litertlm` weights. The download lands in the app's own external files directory (`getExternalFilesDir(null)`), not in `/sdcard/Android/data/com.google.ai.edge.gallery/files/...` on Android 11+ — see §4.3.
+*   **Live traffic log** persisted to Room SQLite: method, path, requesting model, client IP, status, duration, response preview.
+*   **Bearer-token gating.** Setting a non-empty *Gateway API key* in the UI requires every client to send `Authorization: Bearer <key>`. Leaving it blank disables auth (LAN-trusted mode).
+*   **CORS preflight handling** for browser clients hitting the LAN endpoint directly.
+*   **Request size cap** of 10 MB (returns `413 Content Too Large`).
+
+### 1.3 Cloud vs local — when to pick which
+
+| | `CLOUD_GEMINI` | `LOCAL_VAL` (LiteRT-LM) |
+|---|---|---|
+| Where it runs | Google's Gemini API servers | On the device, in-process |
+| Internet required | Yes | No |
+| Hardware load | Just network | CPU and/or GPU; 580 MB – 4.9 GB of RAM depending on model |
+| Cost model | Per-token Gemini billing | Free after model download |
+| Where prompts go | To Google over TLS | Stays on the device |
+| Best for | Frontier-quality answers, long context | Privacy-sensitive workloads, offline operation, no per-call billing |
+| Latency profile | Network-bound (typically 200 ms – several seconds) | Compute-bound; first call is slow because weights must be loaded once (10–60 s) |
+
+### 1.4 Supported model ids
+
+These are the ids that `GET /v1/models` may advertise and that `POST /v1/chat/completions` will accept. Anything else returns `400 model_not_found`.
+
+| Client-facing id | Runtime | Upstream / file | Notes |
+|---|---|---|---|
+| `gemini-2.5-flash` | CLOUD | `gemini-2.5-flash` | Default cloud target |
+| `gemini-2.5-pro` | CLOUD | `gemini-2.5-pro` | |
+| `gemini-1.5-flash` | CLOUD | `gemini-1.5-flash` | |
+| `gemini-1.5-pro` | CLOUD | `gemini-1.5-pro` | |
+| `gpt-4o-mini` *(alias)* | CLOUD | `gemini-2.5-flash` | Convenience for OpenAI clients |
+| `gpt-3.5-turbo` *(alias)* | CLOUD | `gemini-2.5-flash` | Convenience for OpenAI clients |
+| `litert-community/gemma-4-E2B-it-litert-lm` | LITERT_LM | `gemma4_2b_v09_obfus_fix_all_modalities_thinking.litertlm` | thinking |
+| `litert-community/gemma-4-E4B-it-litert-lm` | LITERT_LM | `gemma4_4b_v09_obfus_fix_all_modalities_thinking.litertlm` | thinking |
+| `google/gemma-3n-E2B-it-litert-lm` | LITERT_LM | `gemma-3n-E2B-it-int4.litertlm` | image, audio capable |
+| `google/gemma-3n-E4B-it-litert-lm` | LITERT_LM | `gemma-3n-E4B-it-int4.litertlm` | image, audio capable |
+| `litert-community/Gemma3-1B-IT` | LITERT_LM | `gemma3-1b-it-int4.litertlm` | smallest weights (~580 MB), best smoke-test target |
+| `litert-community/Qwen2.5-1.5B-Instruct` | LITERT_LM | `Qwen2.5-1.5B-Instruct_..._q8_ekv4096.litertlm` | |
+| `litert-community/DeepSeek-R1-Distill-Qwen-1.5B` | LITERT_LM | `DeepSeek-R1-Distill-Qwen-1.5B_..._q8_ekv4096.litertlm` | thinking |
+| `litert-community/functiongemma-270m-ft-tiny-garden` | LITERT_LM | `tiny_garden.litertlm` | CPU-only |
+| `litert-community/functiongemma-270m-ft-mobile-actions` | LITERT_LM | `mobile_actions.litertlm` | CPU-only |
+| `aicore-gemma-4-e2b`, `aicore-gemma-4-e4b` | AICORE | — | Registered but **not yet implemented**. Returns `501 not_implemented`. |
+
+> **Note on multimodal input.** `image` / `audio` capable rows above advertise the *model* capability. The gateway's request translator currently only forwards text content; image and audio in request bodies are dropped. See `plan.md` §11 for the tracked work to plumb `Content.ImageBytes` / `Content.AudioBytes` through `extractLocalEngineRequest`.
+
+---
+
+## 2. Architecture
+
+### 2.1 Big-picture flow
 
 ```
-       +--------------------------------------------+
-       |             External Clients               |
-       |       (Send OpenAI /v1/chat/completions)   |
-       +---------------------+----------------------+
-                             | [Wi-Fi LAN Socket Connection]
-                             v
-       +--------------------------------------------+
-       |   [ProxyServerManager] Server Socket       | <---+ (Manage State Loop)
-       +---------------------+----------------------+     |
-                             |                            |
-       +---------------------+----------------------+     | Controls Sockets
-       |    [OpenAiToGeminiTranslator] Translates   |     | & Reads Configs
-       |    - Inbound OpenAI JSON -> Gemini format  |     |
-       |    - Outbound Gemini JSON -> OpenAI layout |     |
-       +-----------+--------------------+-----------+     |
-                   |                    |                 |
-                   | (LiteRT-LM Mode)   | (Cloud Mode)    |
-                   v                    v                 |
-       +---------------------+ +--------------------+     |
-       |  LiteRT-LM Engine   | | Google Gemini Cloud|     |
-       | (On-Device weights) | |   REST Endpoint    |     |
-       +---------------------+ +--------------------+     |
-                                                          |
-    ===================== STATE ENGINE =====================|
-                                                          |
-    +-------------------------------------------------+     |
-    |               [GatewayViewModel]                | ----+
-    |  - settingsState: StateFlow<ProxySetting?>      |
-    |  - logsState: StateFlow<List<GatewayLog>>       |
-    |  - isServerRunning, serverPort, serverIp        |
-    |  - downloadProgress, downloadStatus             |
-    +-----------------------+-------------------------+
-                            | Dynamic UI Binding
-                            v
-    +-------------------------------------------------+
-    |                [GatewayScreen]                  |
-    |  - Material 3 Visual Controller Screen          |
-    |  - Interactive Model Cards, Progress Indicators |
-    +-------------------------------------------------+
+Client (curl, OpenAI SDK, anything OpenAI-compatible)
+        │  POST /v1/chat/completions   { model: <openai-id>, messages: [...] }
+        ▼
+ProxyServerManager.handleClient            (raw socket; OkHttp for cloud egress)
+        │
+        ├─ ModelRouter.resolve(requestedId, settings, ...)
+        │     ├─ findStrict — exact id or alias; null otherwise
+        │     ├─ provider ⇄ runtime cross-check
+        │     ├─ weights existence check (LiteRT only)
+        │     └─ cloud-key presence check (Cloud only)
+        │
+        ├─ RoutedModel.Cloud      → OkHttp → Gemini REST
+        ├─ RoutedModel.LiteRtLm   → LiteRtLmEngine.ensureLoadedAndReset() + .generate()
+        └─ RoutedModel.AiCore     → 501 not_implemented
+```
+
+The full design rationale and remaining roadmap is in [`plan.md`](plan.md).
+
+### 2.2 MVVM stack
+
+*   **Compose UI** (`GatewayScreen`) reads `StateFlow`s from `GatewayViewModel`.
+*   **`GatewayViewModel`** orchestrates server lifecycle, model downloads (with byte-accurate progress), and exposes settings + logs.
+*   **`GatewayRepository` + Room** persists exactly one `proxy_settings` row (PK = 1) and a rolling 100-row `gateway_logs` window.
+*   **`ProxyServerManager`** holds the server socket, accept loop, per-connection coroutine, and dispatches via `ModelRouter`.
+*   **`OpenAiToGeminiTranslator`** maps OpenAI ⇄ Gemini for cloud, and OpenAI ⇄ LiteRT-LM SDK shapes for local.
+*   **`LiteRtLmEngine`** singleton holds at most one `Engine` + `Conversation` from `com.google.ai.edge.litertlm:litertlm-android:0.11.0`. The lifecycle (capability probe, NPU/TPU sampler-null rule, single-load-at-a-time keying on `(modelId, backend, maxTokens)`) mirrors gallery's `LlmChatModelHelper`.
+
+### 2.3 Persistence
+
+#### Table: `proxy_settings` (schema v2)
+
+Singleton row (`id = 1`). Schema version bumps are migrated, not wiped — see `AppDatabase.MIGRATION_1_2`. Earlier builds used `fallbackToDestructiveMigration()` and lost user settings on upgrade; that is no longer the case.
+
+| Column | Type | Default | Purpose |
+|---|---|---|---|
+| `id` | `INTEGER PRIMARY KEY` | `1` | Singleton constraint. |
+| `port` | `INTEGER NOT NULL` | `8080` | Bind port for the server socket. |
+| `proxyApiKey` | `TEXT NOT NULL` | `""` | Optional bearer-token gate. Empty = LAN-trusted mode. |
+| `activeModelId` | `TEXT NOT NULL` | `litert-community/gemma-4-E2B-it-litert-lm` | Default selected model in the UI. **Not** used to coerce request routing — strict model ids only. |
+| `targetProvider` | `TEXT NOT NULL` | `CLOUD_GEMINI` | Either `CLOUD_GEMINI` or `LOCAL_VAL`. |
+| `geminiApiKey` | `TEXT NOT NULL` | `""` | Per-device override of the BuildConfig key (added in v2). |
+
+#### Table: `gateway_logs`
+
+Rolling audit. The DAO returns the most recent 100 rows for the live UI list.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | `INTEGER PRIMARY KEY AUTOINCREMENT` | |
+| `timestamp` | `INTEGER NOT NULL` | Epoch ms |
+| `method` | `TEXT NOT NULL` | `GET`, `POST`, `OPTIONS`, or `SYSTEM` for internal events |
+| `path` | `TEXT NOT NULL` | The raw request path (pre-normalization) |
+| `requestModel` | `TEXT NOT NULL` | Parsed from JSON body, falls back to `unknown-model` |
+| `clientIp` | `TEXT NOT NULL` | IPv4 or IPv6 of the caller |
+| `status` | `INTEGER NOT NULL` | HTTP status returned |
+| `durationMs` | `INTEGER NOT NULL` | Wall-clock |
+| `responsePreview` | `TEXT NOT NULL` | First 120 chars of `choices[0].message.content`, or the raw body for non-200s |
+| `isAuthorized` | `INTEGER NOT NULL` | 0/1 |
+
+### 2.4 Source map (one-line per file)
+
+```
+AndroidManifest.xml                    declares INTERNET / ACCESS_NETWORK_STATE / ACCESS_WIFI_STATE; usesCleartextTraffic="true"
+MainActivity.kt                        Compose host; constructs GatewayViewModel and renders GatewayScreen
+data/AppDatabase.kt                    Room v2; MIGRATION_1_2 (geminiApiKey)
+data/ProxySetting.kt                   singleton settings entity (port, keys, activeModelId, targetProvider)
+data/ProxySettingDao.kt                Room DAO with reactive Flow + upsert
+data/GatewayLog.kt                     audit-log entity
+data/GatewayLogDao.kt                  rolling 100-row reactive query + insert/clear
+data/GatewayRepository.kt              repository over the two DAOs
+data/ModelsRegistry.kt                 RuntimeType enum, LocalModelInfo, allowedModels, findStrict, deprecated getModelById
+ui/GatewayViewModel.kt                 server lifecycle + model downloads + StateFlows
+ui/GatewayScreen.kt                    Material 3 dashboard
+server/ProxyServerManager.kt           server socket, request parser, dispatch through ModelRouter, OkHttp egress
+server/ModelRouter.kt                  pure routing logic; returns Result<RoutedModel> with typed RoutingError
+server/HttpErrors.kt                   OpenAI-shaped {error:{message,type,code}} renderer
+server/OpenAiToGeminiTranslator.kt     OpenAI ⇄ Gemini (cloud); OpenAI ⇄ LiteRT-LM SDK shapes (local)
+inference/LiteRtLmEngine.kt            LiteRT-LM Engine + Conversation lifecycle (mirrors gallery)
+test/.../ExampleRobolectricTest.kt     small Robolectric smoke
+test/.../GreetingScreenshotTest.kt     Roborazzi snapshot
+test/.../server/ModelRouterTest.kt     14 plain-JUnit cases over the routing surface
 ```
 
 ---
 
-### 2.2 Data Dictionary
+## 3. Setup
 
-The persistent system details are written to an SQLite database managed via the **Room ORM** layer (`AppDatabase`).
+### 3.1 Build prerequisites
 
-#### Table 1: `proxy_settings` (Updated to version 2)
-This table encapsulates the core configuration state of the proxy server. For robust singleton operation, the ID row is hardcoded to `1`, ensuring exactly one operational settings instance is maintained.
+*   Android Studio Iguana or newer (or a system Gradle 8.x with the Android Gradle Plugin 9.1.x).
+*   JDK 17 or 21 on the build machine.
+*   Android SDK with API 36 platform installed and `local.properties` pointing at it (`sdk.dir=...`).
+*   Internet access to Maven Central — needed to fetch `com.google.ai.edge.litertlm:litertlm-android:0.11.0` plus the rest of the AGP / Compose / Room artifacts.
 
-| Column Name | Storage Type | Nullability | Constraints | Default Value | Functional Role & Purpose |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `id` | `INTEGER` | `NOT NULL` | `PRIMARY KEY` | `1` | Forces a singleton master settings record constraint. |
-| `port` | `INTEGER` | `NOT NULL` | Range: `1024` - `65535` | `8080` | Port assigned to start the background proxy server socket. |
-| `proxyApiKey` | `TEXT` | `NOT NULL` | None | `""` | Restricts client API access. Rejects requests lacking bearer matching. |
-| `activeModelId` | `TEXT` | `NOT NULL` | None | `"litert-community/gemma-4-E2B-it-litert-lm"` | Active AI model target selection ID. |
-| `targetProvider` | `TEXT` | `NOT NULL` | One of: `"CLOUD_GEMINI"`, `"LOCAL_VAL"` | `"CLOUD_GEMINI"` | Active routing provider strategy. |
-| `geminiApiKey` | `TEXT` | `NOT NULL` | None | `""` | Device-stored custom Gemini API Key. Overrides BuildConfig keys. |
+### 3.2 Gemini API key — two ways to provide it
 
-#### Table 2: `gateway_logs`
-An audit trail record table archiving HTTP requests processed over the local Android loopback or Wi-Fi channel.
+The cloud path needs a Gemini API key. Either method works; the in-app key wins if both are set.
 
-| Column Name | Storage Type | Nullability | Constraints | Default Value | Functional Role & Purpose |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `id` | `INTEGER` | `NOT NULL` | `PRIMARY KEY AUTOINCREMENT` | - | Unique incremental record index. |
-| `timestamp` | `INTEGER` | `NOT NULL` | None | `System.currentTimeMillis()` | UTC timestamp in epoch milliseconds. |
-| `method` | `TEXT` | `NOT NULL` | None | - | Received HTTP Action prefix (e.g., `"POST"`, `"GET"`, `"OPTIONS"`). |
-| `path` | `TEXT` | `NOT NULL` | None | - | Visited address subpath (e.g., `"/v1/chat/completions"`). |
-| `requestModel` | `TEXT` | `NOT NULL` | None | `"unknown-model"` | Target AI Model parsed from client payload. |
-| `clientIp` | `TEXT` | `NOT NULL` | None | `"unknown"` | Origin IPv4 or IPv6 network address of remote caller. |
-| `status` | `INTEGER` | `NOT NULL` | None | `200` | HTTP Response Status Code returned to client (e.g. `200`, `401`, `413`, `500`). |
-| `durationMs` | `INTEGER` | `NOT NULL` | None | `0` | Absolute duration execution speed metric in milliseconds. |
-| `responsePreview` | `TEXT` | `NOT NULL` | None | `""` | Summary sample of the processed response text. |
-| `isAuthorized` | `INTEGER` | `NOT NULL` | `0` (false) / `1` (true) | `1` | Denotes whether client credentials evaluation passed checks. |
+#### Method A — In-app (recommended for end users)
 
----
+1.  Launch the app on the device.
+2.  In **Server parameters**, paste the key into **Device-Stored Gemini API Key**.
+3.  Tap **Save & detach socket**. The key is written to the local SQLite DB (`proxy_settings.geminiApiKey`).
 
-### 2.3 Detailed File-by-File Blueprint & Usage Analysis
+#### Method B — Compile-time (for developers building from source)
 
-A comprehensive mapping of each of the codebase files, outlining their direct responsibilities, input/output structures, and consumer references across the system.
+This project uses the [Secrets Gradle Plugin](https://github.com/google/secrets-gradle-plugin), configured in `app/build.gradle.kts` to read from `.env` (primary) and `.env.example` (fallback):
 
-```
-┌───────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-│                                             FILE INTER-DEPENDENCY MAP                                         │
-├──────────────────────────────────────┬────────────────────────────────────────────────────────────────────────┤
-│ FILE PATH                            │ DIRECT CONSUMER REFS / CALLED BY WHO                                   │
-├──────────────────────────────────────┼────────────────────────────────────────────────────────────────────────┤
-│ AndroidManifest.xml                  │ System Launcher (Android Operating System Context)                     │
-│ MainActivity.kt                      │ System Launcher Entrypoint                                             │
-│ AppDatabase.kt                       │ GatewayViewModel, GatewayRepository                                    │
-│ ProxySetting.kt                      │ AppDatabase, ProxySettingDao, GatewayRepository, GatewayViewModel      │
-│ ProxySettingDao.kt                   │ AppDatabase, GatewayRepository                                         │
-│ GatewayLog.kt                        │ AppDatabase, GatewayLogDao, GatewayRepository, GatewayViewModel        │
-│ GatewayLogDao.kt                     │ AppDatabase, GatewayRepository                                         │
-│ GatewayRepository.kt                 │ GatewayViewModel                                                       │
-│ ModelsRegistry.kt                    │ GatewayScreen, GatewayViewModel, ProxyServerManager                    │
-│ OpenAiToGeminiTranslator.kt          │ ProxyServerManager                                                     │
-│ ProxyServerManager.kt                │ GatewayViewModel, MainActivity                                         │
-│ GatewayViewModel.kt                  │ MainActivity, GatewayScreen                                            │
-│ GatewayScreen.kt                     │ MainActivity                                                           │
-│ ExampleRobolectricTest.kt            │ Android Unit Test Runner Environment                                   │
-│ GreetingScreenshotTest.kt            │ Roborazzi Snapshot Test Engine                                         │
-└──────────────────────────────────────┴────────────────────────────────────────────────────────────────────────┘
+```kotlin
+secrets {
+    propertiesFileName = ".env"
+    defaultPropertiesFileName = ".env.example"
+}
 ```
 
-#### 1. `app/src/main/AndroidManifest.xml`
-*   **Direct Role:** System configuration and capability permissions manifest.
-*   **Direct Consumers:** Launched directly by the Android OS framework.
-*   **Detailed Function:** Defines application launcher metadata. Declares vital system level permissions:
-    *   `android.permission.INTERNET` to allow background server sockets to process network packets.
-    *   `android.permission.ACCESS_NETWORK_STATE` and `android.permission.ACCESS_WIFI_STATE` to discover local Wi-Fi IP interfaces.
-    *   Configures `usesCleartextTraffic="true"` to process unencrypted REST debugging payloads natively.
+So:
 
-#### 2. `app/src/main/java/com/example/MainActivity.kt`
-*   **Direct Role:** High-level UI Host Activity bootstrap.
-*   **Direct Consumers:** Core system entrypoint launched by `AndroidManifest.xml`.
-*   **Detailed Function:** Inherits from `ComponentActivity`. Hooks the modern Material 3 design systems Theme. Instantiates the system `GatewayViewModel`, and binds our single-screen user-interface container `GatewayScreen`. Ensures graceful setup and binds window insets.
-
-#### 3. `app/src/main/java/com/example/data/AppDatabase.kt`
-*   **Direct Role:** Singleton Room SQL Access Point.
-*   **Direct Consumers:** Instantiated by `GatewayRepository` to distribute database capabilities.
-*   **Detailed Function:** Defines persistent tables (`ProxySetting` and `GatewayLog`). Increments the SQLite configuration schema to **version 2** to integrate custom device-stored API keys, defining automated migrations to preserve stability across deployments.
-
-#### 4. `app/src/main/java/com/example/data/ProxySetting.kt`
-*   **Direct Role:** Data entity model representing gateway preferences.
-*   **Direct Consumers:** Referenced by `AppDatabase`, `ProxySettingDao`, `GatewayRepository`, `GatewayViewModel`, `GatewayScreen`, and `ProxyServerManager`.
-*   **Detailed Function:** Formulates fields for `port`, `proxyApiKey`, `activeModelId`, `targetProvider`, and `geminiApiKey` (overriding default keys contextwide). Restricts rows to `id = 1` to guarantee schema singleton compliance.
-
-#### 5. `app/src/main/java/com/example/data/ProxySettingDao.kt`
-*   **Direct Role:** Relational query mappings for system preferences.
-*   **Direct Consumers:** Binds database hooks compiled by `AppDatabase`.
-*   **Detailed Function:** Implements Kotlin `@Dao`. Houses query operations enabling reactive Flow streams of the system configuration, providing `upsert` and deletion wrappers.
-
-#### 6. `app/src/main/java/com/example/data/GatewayLog.kt`
-*   **Direct Role:** Request auditing and transaction data structure.
-*   **Direct Consumers:** Referenced by `AppDatabase`, `GatewayLogDao`, `GatewayRepository`, `GatewayViewModel`, and `GatewayScreen`.
-*   **Detailed Function:** Implements a strict `@Entity` marking for mapping caller IPs, latency values, method paths, targets, payload samples, and authentication checks.
-
-#### 7. `app/src/main/java/com/example/data/GatewayLogDao.kt`
-*   **Direct Role:** Relational query mapping for transit logs.
-*   **Direct Consumers:** Bound by `AppDatabase` and called by `GatewayRepository`.
-*   **Detailed Function:** Compiles transactional SQL strings. Includes `@Query("SELECT * FROM gateway_logs ORDER BY timestamp DESC LIMIT 100")` to supply live, reactive log vectors as a Kotlin flow stream.
-
-#### 8. `app/src/main/java/com/example/data/GatewayRepository.kt`
-*   **Direct Role:** Clean repository architectural pattern data broker.
-*   **Direct Consumers:** Injected into `GatewayViewModel` to handle operational actions.
-*   **Detailed Function:** Decouples direct DB actions from interface states. Manages background transaction updates and provides read synchronization.
-
-#### 9. `app/src/main/java/com/example/data/ModelsRegistry.kt`
-*   **Direct Role:** Manifest repository cataloging supported models.
-*   **Direct Consumers:** Queried by `GatewayScreen`, `GatewayViewModel`, and `ProxyServerManager`.
-*   **Detailed Function:** Registers available options (such as Gemma-3n, Gemma-4, functiongemma, etc.). Resolves exact on-device physical paths dynamically under file-explorer structures automatically using `getResolvedTargetFile(context)`.
-
-#### 10. `app/src/main/java/com/example/ui/GatewayViewModel.kt`
-*   **Direct Role:** Central state machine coordinating operations.
-*   **Direct Consumers:** Binds UI actions launched in `GatewayScreen`.
-*   **Detailed Function:** Governs visual states, active server status, network sockets, logs, and downloads:
-    *   Launches long-running dynamic Http network downloads to fetch `*.litertlm` targets.
-    *   Tracks fractional download speeds (Mb/s) and exposes real-time status flows.
-    *   Directly handles the server life-cycle through safe thread execution.
-
-#### 11. `app/src/main/java/com/example/ui/GatewayScreen.kt`
-*   **Direct Role:** Modern Material 3 Jetpack Compose Interface.
-*   **Direct Consumers:** Renders inside `MainActivity`.
-*   **Detailed Function:** Formulates visual layout sections (Server Activity, Configuration Input Fields, Interactive Model Directory, Download Managers, Audit Logs, and Transaction Sheet overlays).
-
-#### 12. `app/src/main/java/com/example/server/OpenAiToGeminiTranslator.kt`
-*   **Direct Role:** Bidirectional REST translation processor.
-*   **Direct Consumers:** Executed by `ProxyServerManager`.
-*   **Detailed Function:** Maps inbound standard OpenAI JSON payloads onto Google Gemini API structures. Translates results back to the OpenAI schema, and includes support for parsing and compiling offline responses for native on-device LiteRT-LM executed targets (`generateLiteRtLmResponse`).
-
-#### 13. `app/src/main/java/com/example/server/ProxyServerManager.kt`
-*   **Direct Role:** Background network multi-threaded server socket.
-*   **Direct Consumers:** Initialized, monitored, and stopped by `GatewayViewModel`.
-*   **Detailed Function:** Runs socket connections, parses inputs, filters malicious streams, enforces authorization keys, verifies 10MB memory limits, intercepts CORS preflights, and routes processes to chosen provider pipelines (Google Gemini API or on-device LiteRT-LM).
-
-#### 14. `app/src/test/java/com/example/ExampleRobolectricTest.kt`
-*   **Direct Role:** Fast local unit tests.
-*   **Direct Consumers:** Run locally in CI/CD pipeline or workstation testing.
-*   **Detailed Function:** Leverages Robolectric to mock Android runtime architectures locally, verifying settings persistence and correct initialization.
-
-#### 15. `app/src/test/java/com/example/GreetingScreenshotTest.kt`
-*   **Direct Role:** Automated visual screenshot test.
-*   **Direct Consumers:** Called by Roborazzi engines.
-*   **Detailed Function:** Launches layout components, rendering exact graphics to capture and spot layout changes before deployment.
-
----
-
-## 3. Step-by-Step User Guide (How to Integrate and Operate)
-
-Follow this step-by-step pipeline to configure credentials, manage downloadables, launch the proxy server, and verify transactions with test payloads.
-
-### Step 1: Configure Gemini API Keys
-
-To route API traffic to Google Cloud Gemini servers (`CLOUD_GEMINI`), the proxy requires an online API developer secret. You can configure this key using either of two secure methods:
-
-#### Method A: Direct In-App Settings Form (Recommended)
-1. Open the application on your Android target device.
-2. Scroll to the **GATEWAY CONFIGURATION** section.
-3. Locate the **Device-Stored Gemini API Key (Optional)** field.
-4. Paste your Gemini API Developer Token directly into this field.
-5. Tap **SHOW** to review the entered token, or **HIDE** to secure it.
-6. Click **APPLY SETTINGS**. This action stores the API key directly inside the on-device Room SQLite database. The gateway will prioritize this key for all future cloud-routing transactions.
-
-#### Method B: Project Workspace Environment Config
-Alternatively, you can compile and bundle development credentials directly into the application build:
-*   **Google AI Studio Console:** Add your key to the project **Secrets panel** using the variable name `GEMINI_API_KEY`. It compiles automatically via `BuildConfig.GEMINI_API_KEY`.
-*   **Local Properties Workspace:** If compiling from source on your workstation, add your credentials in `local.properties` at the project root:
+*   Create `.env` at the repository root (it is git-ignored):
     ```properties
-    GEMINI_API_KEY=AIzaSy...your_gemini_api_key_here...
+    GEMINI_API_KEY=AIzaSy...your_key_here...
     ```
+*   The plugin injects this into `BuildConfig.GEMINI_API_KEY` at build time.
+*   `.env.example` already contains a placeholder (`MY_GEMINI_API_KEY`) so the build never fails for missing input — the gateway treats that placeholder as "no key configured" and returns `gateway_setup_error` until you supply a real one (either via `.env` or via Method A).
+
+> **`local.properties` is *not* read for `GEMINI_API_KEY`.** If you have older docs or scripts that put the key there, they won't work. The plugin's `propertiesFileName` is `.env`.
+
+### 3.3 Signing
+
+*   Debug builds are signed with the checked-in `debug.keystore` (alias `androiddebugkey`, password `android`). Convenient for local installs; do not ship a release with it.
+*   Release builds read `KEYSTORE_PATH`, `STORE_PASSWORD`, and `KEY_PASSWORD` from environment variables. The keystore file referenced by `KEYSTORE_PATH` is *not* checked in.
 
 ---
 
-### Step 2: Configure & Wake the Proxy Server
+## 4. Operating the gateway
 
-1.  Launch the **AI Proxy Gateway** on your Android device.
-2.  Adjust configuration parameters in the **GATEWAY CONFIGURATION** card:
-    *   **PORT:** Enter a dynamic listening port (e.g. `8080`).
-    *   **GATEWAY API KEY:** Establish a gateway password (e.g., `SecureProxyKey99`) to block unauthorized external clients on your Wi-Fi network. Leaving this setting blank skips client authorization checking.
-    *   **PROVIDER:** Choose your active execution engine:
-        *   `Cloud Gemini API`: Route requests online to Google cloud servers.
-        *   `LiteRT-LM`: Run local downloaded `*.litertlm` models with 100% offline security. Note: If the weight files are not downloaded yet, the gateway will return an HTTP 400 Bad Request error to callers instead of executing simulated fallbacks.
-3.  Click the **APPLY SETTINGS** button in the layout. This updates parameters instantly inside the Room database.
-4.  Launch the listener by clicking the **START SERVER** button. The server card will instantly display a green **"RUNNING"** status and display host IP details (e.g., `http://192.168.1.144:8080`).
+### 4.1 Start the server
 
----
+1.  Open the app.
+2.  In **Server parameters**, set:
+    *   **Listening Port** (e.g. `8080`).
+    *   **OAuth / Client Proxy API Key** — optional bearer-token gate. Anything non-empty enforces `Authorization: Bearer <key>` on every request.
+    *   **Routing Model Provider Strategy** — `Cloud Gemini API` or `LiteRT-LM`.
+    *   **Device-Stored Gemini API Key** — required for the cloud path unless you supplied one at build time (§3.2 Method B).
+3.  Tap **Save & detach socket** to persist.
+4.  Tap **Start Gateway Server**. The status banner turns green and the **Compatible Base URL** field shows e.g. `http://192.168.1.144:8080`.
 
-### Step 3: Manage and Download LiteRT Model Files (*.litertlm)
+### 4.2 Download LiteRT-LM weights
 
-For offline LiteRT execution, you can download model weight files directly onto your device storage:
-1. Navigate to the **ON-DEVICE GATED MODELS** section.
-2. View the clean, uncluttered visual directory cards representing each of the supported LiteRT-LM models. These cards focus purely on file status and download progress without redundant selection indicators, default markers, check icons, or interactive radio buttons.
-3. Tap to expand the desired model's card to access weight location paths and status flags:
-    *   The absolute path on your device file-system where weights are or will be stored.
-    *   A file status badge: Gray **"NOT DOWNLOADED"** or green **"DOWNLOADED & READY"**.
-4. Click the **DOWNLOAD FILE** action button on the expanded card.
-5. A progress tracker will show the percentage progress and current download rate in real time.
-6. Once downloaded, the system verifies the physical model file. The gateway dynamically resolves and targets this model file when requested by external client APIs (through the client's request model parameter or `/v1/models` API resolution).
-7. Tap **COPY PATH** to copy the target weight destination path to your clipboard.
+Local mode needs weights on disk. In the **On-device gated models** section:
 
----
+1.  Find the row for the model you want (e.g. `Gemma3-1B-IT`, the smallest practical option at ~580 MB).
+2.  Tap **Download file**. Live percentage and bytes-per-second are reported.
+3.  When done the row shows **Downloaded & ready** and the storage path. The badge is real — `GET /v1/models` will now include this id.
 
-### Step 4: Dispatch Integration Calls (using cURL)
+> **Where do downloads land?** §4.3.
 
-To verify the gateway is routing correctly, launch a terminal on any computer connected to the same Wi-Fi subnetwork and run a test payload:
+### 4.3 Storage paths and Android scoped storage
+
+The model registry advertises paths under `/sdcard/Android/data/com.google.ai.edge.gallery/files/...`. On Android 11+ (API 30+), scoped storage means **this app cannot read another app's external private directory**. To avoid silent breakage:
+
+*   The download lands in **this app's own** external files directory: `Context.getExternalFilesDir(null)/<sub-path>`.
+*   `LocalModelInfo.getResolvedTargetFile(context)` first probes the gallery-style path (in case it exists from another mechanism) and otherwise falls back to the app's own dir.
+*   The path you see in the UI's **Storage target path** row is the actual resolved file path on your device, not the advertised `/sdcard/...` constant.
+
+If you side-load weights via `adb push` from a workstation, push them to the resolved path the UI shows — not the `/sdcard/...` one.
+
+### 4.4 Test it
+
+From any machine on the same Wi-Fi:
 
 ```bash
 curl -X POST http://192.168.1.144:8080/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer SecureProxyKey99" \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer <gateway-api-key-or-omit-if-blank>' \
   -d '{
-    "model": "gemma-4-thinking",
+    "model": "litert-community/Gemma3-1B-IT",
     "messages": [
-      {
-        "role": "system",
-        "content": "You are a helpful programming assistant."
-      },
-      {
-        "role": "user",
-        "content": "Verify if this calculate function is optimized: fun calculate(x: Int) = x * 2"
-      }
+      { "role": "system", "content": "You are a helpful assistant." },
+      { "role": "user",   "content": "What is 2+2?" }
     ],
     "temperature": 0.3
   }'
 ```
 
-The server processes the payload and returns standard compliant JSON structure:
+Successful response (LiteRT-LM example):
 
 ```json
 {
-  "id": "chatcmpl-b4e859fa21e2b4...",
+  "id": "chatcmpl-...",
   "object": "chat.completion",
   "created": 1779515541,
-  "model": "gemma-4-thinking",
+  "model": "litert-community/Gemma3-1B-IT",
   "choices": [
     {
       "index": 0,
-      "message": {
-        "role": "assistant",
-        "content": "Yes, this function is highly optimized as it compiles down into a simple bitshift or fast multiply..."
-      },
+      "message": { "role": "assistant", "content": "4" },
       "finish_reason": "stop"
     }
   ],
-  "usage": {
-    "prompt_tokens": 42,
-    "completion_tokens": 140,
-    "total_tokens": 182
-  }
+  "usage": { "prompt_tokens": 12, "completion_tokens": 1, "total_tokens": 13 },
+  "system_fingerprint": "litertlm:gpu:312ms"
 }
 ```
 
-If LiteRT-LM is selected but you have not downloaded the corresponding model weights, the gateway responds with an HTTP 400 Bad Request error payload:
+`system_fingerprint` carries the real backend used (`cpu` or `gpu`) and the measured total latency in milliseconds. Token counts from LiteRT-LM are 4-chars-per-token approximations (the SDK does not surface token counts in 0.11.0).
+
+If you ask for an unknown model id:
 
 ```json
 {
   "error": {
-    "message": "Local LiteRT-LM model weights for 'litert-community/gemma-4-E2B-it-litert-lm' are not downloaded elements. Please download the weights first through the gateway application UI before choosing LiteRT-LM route.",
+    "message": "Unknown model id: 'gpt-99'. Call GET /v1/models to list available ids.",
     "type": "model_not_found",
     "code": 400
   }
 }
 ```
 
----
+If you select `LiteRT-LM` mode but the `.litertlm` file isn't downloaded:
 
-### Step 5: Real-time Traffic Auditing
-
-1.  Review requests as they arrive in the **Traffic Logs** panel at the bottom of your screen.
-2.  Successful transactions appear in green marked with HTTP code `200`. Rejected connections (e.g., missing API keys) report code `401`. Extremely large inputs exceeding restrictions display status code `413`.
-3.  Tap any row to open the **Transaction Details Sheet**. This sheet reveals complete metadata timings, origin client IPs, full request inputs, and complete output payloads.
-4.  Clear tracking archives at any time by pressing the trash bin icon (**CLEAR LOGS**), and safely shut down socket listeners by tapping the **STOP** button.
-
----
-
-### Step 6: Running Automated Tests
-
-You can run Unit and Screenshot tests locally on your development system using these Gradle commands:
-
-*   **To Run Standard Unit & Robolectric Tests:**
-    ```bash
-    gradle :app:testDebugUnitTest
-    ```
-*   **To Verify Screenshot Tests for Visual Regressions:**
-    ```bash
-    gradle :app:verifyRoborazziDebug
-    ```
-*   **To Record New Screen Visual Snapshots:**
-    ```bash
-    gradle :app:recordRoborazziDebug
-    ```
-
----
-
-## 4. Diagnostics & Troubleshooting
-
-### 4.1 Understanding the InputDispatcher Channel Broken Warning
-During active iteration or hot-redeploying of the APK from your development workstation, you may observe the following log in Android Logcat:
-```text
-E/InputDispatcher: channel 'be574b0 com.aistudio.aiproxygateway.jxrqtm/com.example.MainActivity' ~ Channel is unrecoverably broken and will be disposed!
+```json
+{
+  "error": {
+    "message": "LiteRT-LM weights for 'litert-community/Gemma3-1B-IT' are not on this device. Expected at: /storage/emulated/0/Android/data/<your-app-id>/files/.../gemma3-1b-it-int4.litertlm",
+    "type": "model_not_found",
+    "code": 400
+  }
+}
 ```
-**Root Cause and Context:**
-*   **Normal Process Lifecycle:** When a new build is deployed via Gradle, Android's Package Manager (PM) intentionally terminates the existing application process (`com.aistudio.aiproxygateway.jxrqtm`) to install and launch the updated version. 
-*   **Expected OS Behavior:** When the process is terminated, the window rendering connection between Android's `InputDispatcher` and the client's window is broken suddenly. The OS prints this warning to indicate it is releasing the window's event resources. 
-*   **No Functional Impact:** This is standard, harmless Android OS behavior during redeployments. It is not a crash, regression, or leak of the application itself.
 
-### 4.2 High-Reliability Socket Lifecycle Management
-To ensure a robust, leak-free development lifecycle when the OS reinstalls the app or recreates the Activity (e.g., during screen rotations), the gateway implements the following architectural safeguards:
-1.  **Unified Socket Release:** When the View Model is cleared during recreation or termination, the `onCleared()` callback instantly calls `serverManager.stopServer()`, ensuring all open network ports are unbound.
-2.  **Atomic Reboot Transactions:** The configuration panel utilizes synchronized Mutex locking (`serverMutex.withLock`) inside `ProxyServerManager` to close and rebind server sockets sequentially. This prevents race conditions or "Port already in use" (`BindException`) crashes during hot updates.
-3.  **Local Loopback Fallbacks:** Network helper routines are fully wrapped in safe network exception handlers (`try-catch Throwable`), falling back gracefully to standard local loopback configurations if Wi-Fi adapters or hardware peripherals are modified.
+### 4.5 Watching traffic
+
+The **Gateway inward traffic logs** panel at the bottom shows the most recent 100 requests with method, path, status code, request model, client IP, duration, and a 120-character preview of the response. Failed routing decisions surface with their `RoutingError` type (`model_not_found`, `provider_mismatch`, `gateway_setup_error`, `not_implemented`).
 
 ---
-*AI Proxy Gateway - Low Latency, Compliant, and High-Performance Android AI Middlewares.*
+
+## 5. Tests
+
+The repository ships with:
+
+*   `app/src/test/java/com/example/ExampleUnitTest.kt` — placeholder JUnit.
+*   `app/src/test/java/com/example/ExampleRobolectricTest.kt` — Robolectric smoke.
+*   `app/src/test/java/com/example/GreetingScreenshotTest.kt` — Roborazzi snapshot.
+*   `app/src/test/java/com/example/server/ModelRouterTest.kt` — 14 plain-JUnit cases covering the routing surface (`UnknownModel`, `ProviderMismatch`, `WeightsMissing`, `CloudKeyMissing`, `AiCoreUnsupported`, alias resolution forward + reverse, both happy paths, callback laziness).
+
+### 5.1 Running tests
+
+> **Gradle wrapper.** The repo does not currently check in a `gradlew` wrapper script. Run from Android Studio (which provides one), or use a system Gradle 8.x with the AGP 9.1.x plugin loaded.
+
+From Android Studio: open the **Gradle** tool window → `app` → `Tasks` → `verification` → `testDebugUnitTest`.
+
+From a system Gradle:
+
+```bash
+gradle :app:testDebugUnitTest          # JUnit + Robolectric
+gradle :app:verifyRoborazziDebug       # screenshot regression check
+gradle :app:recordRoborazziDebug       # update screenshot baselines
+```
+
+### 5.2 On-device smoke recipe
+
+A smoke test for the real LiteRT-LM path (which can't be exercised from CI without device hardware):
+
+1.  Install the debug APK on a device with ≥ 4 GB RAM (Pixel 7+ class).
+2.  Download `litert-community/Gemma3-1B-IT` from the model list (~580 MB).
+3.  Set provider to `LOCAL_VAL`, start the server.
+4.  Run the curl in §4.4. First call: 10–60 s (engine load). Subsequent calls: < 5 s.
+5.  Verify `system_fingerprint` matches `litertlm:gpu:<n>ms` or `litertlm:cpu:<n>ms` with non-trivial `<n>`. The math prompt should return a number, not a canned acknowledgement.
+
+---
+
+## 6. Diagnostics
+
+### 6.1 `InputDispatcher: Channel is unrecoverably broken`
+
+Visible in Logcat during dev iteration:
+
+```
+E/InputDispatcher: channel '... com.aistudio.aiproxygateway.jxrqtm/com.example.MainActivity' ~ Channel is unrecoverably broken and will be disposed!
+```
+
+Normal. Android's package manager kills the previous process when you re-deploy; the OS prints this when it tears down the dead process's window. Not a crash and not a leak.
+
+### 6.2 Socket lifecycle invariants
+
+*   `GatewayViewModel.onCleared()` calls `serverManager.stopServer()`, so screen rotations and process death close the listening socket and release the LiteRT-LM engine's native memory.
+*   `ProxyServerManager.startServer` / `rebootServer` / `stopServer` serialize through a `serverMutex` so concurrent UI taps cannot cause `BindException`.
+*   The accept loop runs in a separate child coroutine from the lock-held one, so a slow `accept()` does not pin the mutex.
+
+### 6.3 Why the package id has a random suffix
+
+`applicationId = "com.aistudio.aiproxygateway.jxrqtm"` — the suffix was added by Google AI Studio's web scaffolder. Functionally harmless but cosmetically odd. Renaming it is a backwards-incompatible change for any installed copy and is tracked in `plan.md` §11.
+
+---
+
+## 7. What's next
+
+See [`plan.md`](plan.md) for the full status table and the ordered list of remaining work — streaming (SSE), function calling, multimodal input, AICore, KV cache reuse, per-model provider selection, and the namespace cleanup.
+
+---
+
+*AI Proxy Gateway — local OpenAI-compatible HTTP front-end for Google Gemini cloud and on-device LiteRT-LM.*
