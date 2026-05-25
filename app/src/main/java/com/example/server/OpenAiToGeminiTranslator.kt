@@ -277,8 +277,14 @@ object OpenAiToGeminiTranslator {
             .put("model", openAiModel)
             .put("choices", JSONArray().put(choice))
             .put("usage", usage)
-            // Honest provenance: real backend used + measured latency. No fabricated metrics.
-            .put("system_fingerprint", "litertlm:${result.backendUsed}:${result.totalLatencyMs}ms")
+            // Honest provenance: real backend used + measured latency + KV-cache hit/miss.
+            // `cache=hit` means this turn reused the existing Conversation; `cache=miss`
+            // means a new Conversation was built (engine reload, new history, or first turn).
+            .put(
+                "system_fingerprint",
+                "litertlm:${result.backendUsed}:${result.totalLatencyMs}ms" +
+                        ":cache=${if (result.kvCacheReused) "hit" else "miss"}"
+            )
             .toString()
     }
 
