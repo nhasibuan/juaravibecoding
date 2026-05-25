@@ -590,7 +590,8 @@ class ProxyServerManager(
                                         model = routed.info,
                                         params = params,
                                         systemInstruction = req.systemInstruction,
-                                        history = req.history
+                                        history = req.history,
+                                        npuOptIn = resolvedSettings.enableNpuBackend
                                     )
                                     if (loadErr != null) {
                                         val (code, body) = OpenAiToGeminiTranslator.wrapLocalError(loadErr, requestModel)

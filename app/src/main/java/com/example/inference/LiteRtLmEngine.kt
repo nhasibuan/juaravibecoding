@@ -95,7 +95,15 @@ object LiteRtLmEngine {
         model: LocalModelInfo,
         params: GenerationParams,
         systemInstruction: String?,
-        history: List<HistoryTurn>
+        history: List<HistoryTurn>,
+        /**
+         * Opt-in for the NPU backend. Default false keeps the conservative
+         * "downgrade NPU to CPU" behavior. When true and the model's
+         * accelerators include "npu", the engine attempts `Backend.NPU(...)`;
+         * if the device lacks the vendor plug-in, `Engine.initialize()`
+         * throws and we surface `engine_load_failed`.
+         */
+        npuOptIn: Boolean = false
     ): Result.Err? = mutex.withLock {
         val resolvedFile = model.getResolvedTargetFile(context)
         if (!resolvedFile.exists() || resolvedFile.length() <= 0L) {
@@ -106,7 +114,7 @@ object LiteRtLmEngine {
             )
         }
 
-        val backendName = pickBackend(model.accelerators)
+        val backendName = pickBackend(model.accelerators, npuOptIn)
         val key = LoadKey(model.modelId, backendName, params.maxOutputTokens)
 
         // 1. (Re)load engine if the key changed.
@@ -269,17 +277,20 @@ object LiteRtLmEngine {
 
     /**
      * Picks a supported backend from a comma-separated accelerator list
-     * (e.g. "gpu,cpu", "cpu", "npu"). NPU is intentionally NOT preferred
-     * automatically because it requires `nativeLibraryDir` plus a vendor
-     * plug-in shipped per-device; we'd rather fall back to GPU/CPU silently
-     * than crash on most devices.
+     * (e.g. "gpu,cpu", "cpu", "npu").
+     *
+     * NPU requires `nativeLibraryDir` plus a vendor plug-in shipped per
+     * device. Auto-preferring it would crash on the majority of phones, so
+     * the default behavior downgrades any "npu" entry to "cpu" unless the
+     * user has explicitly opted in via [ProxySetting.enableNpuBackend].
      */
-    private fun pickBackend(acceleratorsCsv: String): String {
+    private fun pickBackend(acceleratorsCsv: String, npuOptIn: Boolean): String {
         val parts = acceleratorsCsv.split(',').map { it.trim().lowercase() }
         return when {
+            npuOptIn && "npu" in parts -> "npu"
             "gpu" in parts -> "gpu"
             "cpu" in parts -> "cpu"
-            "npu" in parts -> "cpu"  // see comment above
+            "npu" in parts -> "cpu"  // listed but user hasn't opted in; safe downgrade
             else -> "cpu"
         }
     }

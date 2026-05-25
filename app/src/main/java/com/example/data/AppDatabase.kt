@@ -7,7 +7,7 @@ import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
-@Database(entities = [ProxySetting::class, GatewayLog::class], version = 2, exportSchema = false)
+@Database(entities = [ProxySetting::class, GatewayLog::class], version = 3, exportSchema = false)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun proxySettingDao(): ProxySettingDao
     abstract fun gatewayLogDao(): GatewayLogDao
@@ -35,6 +35,19 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v2 -> v3: adds the `enableNpuBackend` opt-in flag (default OFF).
+         * SQLite stores Boolean as INTEGER 0/1.
+         */
+        val MIGRATION_2_3: Migration = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE proxy_settings " +
+                            "ADD COLUMN enableNpuBackend INTEGER NOT NULL DEFAULT 0"
+                )
+            }
+        }
+
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -42,7 +55,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "ai_proxy_gateway_db"
                 )
-                    .addMigrations(MIGRATION_1_2)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                     .build()
                 INSTANCE = instance
                 instance
