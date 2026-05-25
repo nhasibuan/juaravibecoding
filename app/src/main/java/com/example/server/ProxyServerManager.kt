@@ -5,6 +5,7 @@ import android.util.Log
 import com.example.BuildConfig
 import com.example.data.GatewayLog
 import com.example.data.GatewayRepository
+import com.example.inference.LiteRtLmEngine
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -247,6 +248,13 @@ class ProxyServerManager(
                 } catch (e: Throwable) {
                     Log.e("ProxyServerManager", "Error stopping socket server", e)
                 }
+            }
+            // Release native LiteRT-LM resources outside the server-socket mutex so a
+            // long close call does not block subsequent server starts.
+            try {
+                LiteRtLmEngine.close()
+            } catch (e: Throwable) {
+                Log.e("ProxyServerManager", "Error closing LiteRtLmEngine on stop", e)
             }
         }
     }
@@ -547,19 +555,47 @@ class ProxyServerManager(
                             if (isLocalVal) {
                                 val modelFile = activeModel.getResolvedTargetFile(context)
                                 val isDownloaded = modelFile.exists() && modelFile.length() > 0
-                                if (isDownloaded) {
-                                    // High-fidelity LiteRT-LM Local weights execution
-                                    val liteRtResponse = OpenAiToGeminiTranslator.generateLiteRtLmResponse(
-                                        rawBody,
-                                        requestModel,
-                                        modelFile.absolutePath
-                                    )
-                                    outputResponseText = liteRtResponse
-                                    sendJsonResponse(outputStream, 200, liteRtResponse)
-                                } else {
+                                if (!isDownloaded) {
                                     httpStatus = 400
-                                    outputResponseText = "{\"error\": {\"message\": \"Local LiteRT-LM model weights for '$activeModelId' are not downloaded elements. Please download the weights first through the gateway application UI before choosing LiteRT-LM route.\", \"type\": \"model_not_found\", \"code\": 400}}"
+                                    outputResponseText = "{\"error\": {\"message\": \"Local LiteRT-LM model weights for '$activeModelId' are not downloaded. Please download the weights first through the gateway application UI before choosing the LiteRT-LM route.\", \"type\": \"model_not_found\", \"code\": 400}}"
                                     sendJsonResponse(outputStream, 400, outputResponseText)
+                                } else {
+                                    // Real on-device LiteRT-LM execution.
+                                    // See app/src/main/java/com/example/inference/LiteRtLmEngine.kt
+                                    // for the canonical lifecycle, mirroring google-ai-edge/gallery's LlmChatModelHelper.
+                                    val req = OpenAiToGeminiTranslator.extractLocalEngineRequest(rawBody)
+                                    val params = LiteRtLmEngine.GenerationParams(
+                                        maxOutputTokens = req.maxTokens,
+                                        temperature = req.temperature,
+                                        topK = req.topK,
+                                        topP = req.topP
+                                    )
+                                    val loadErr = LiteRtLmEngine.ensureLoadedAndReset(
+                                        context = context,
+                                        model = activeModel,
+                                        params = params,
+                                        systemInstruction = req.systemInstruction,
+                                        history = req.history
+                                    )
+                                    if (loadErr != null) {
+                                        val (code, body) = OpenAiToGeminiTranslator.wrapLocalError(loadErr, requestModel)
+                                        httpStatus = code
+                                        outputResponseText = body
+                                        sendJsonResponse(outputStream, code, body)
+                                    } else {
+                                        when (val r = LiteRtLmEngine.generate(req.latestUserText)) {
+                                            is LiteRtLmEngine.Result.Ok -> {
+                                                outputResponseText = OpenAiToGeminiTranslator.wrapLocalSuccess(r, requestModel)
+                                                sendJsonResponse(outputStream, 200, outputResponseText)
+                                            }
+                                            is LiteRtLmEngine.Result.Err -> {
+                                                val (code, body) = OpenAiToGeminiTranslator.wrapLocalError(r, requestModel)
+                                                httpStatus = code
+                                                outputResponseText = body
+                                                sendJsonResponse(outputStream, code, body)
+                                            }
+                                        }
+                                    }
                                 }
                             } else {
                                 httpStatus = 400

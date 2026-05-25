@@ -1,10 +1,26 @@
 package com.example.server
 
+import com.example.inference.LiteRtLmEngine
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
 
+/**
+ * Translates between OpenAI Chat-Completions and:
+ *   1. Google Gemini REST shape  (cloud path — translateRequest / translateResponse)
+ *   2. LiteRT-LM Kotlin SDK      (local path — extractLocalEngineRequest / wrapLocalSuccess / wrapLocalError)
+ *
+ * The previous simulator (`solveSimplePrompt`, `generateSimulatedResponse`,
+ * `generateLiteRtLmResponse`) was removed: it was a regex-based keyword matcher
+ * that fabricated "tokens/second" metrics and pretended to be on-device
+ * inference. Real LiteRT-LM execution is now in [LiteRtLmEngine], following
+ * the canonical pattern from google-ai-edge/gallery.
+ */
 object OpenAiToGeminiTranslator {
+
+    // ------------------------------------------------------------------------
+    // Cloud path (unchanged)
+    // ------------------------------------------------------------------------
 
     /**
      * Translates an OpenAI Chat Completion request JSON into a Google Gemini REST request JSON.
@@ -19,7 +35,7 @@ object OpenAiToGeminiTranslator {
         for (i in 0 until messages.length()) {
             val msg = messages.getJSONObject(i)
             val role = msg.optString("role", "user")
-            
+
             var contentText = ""
             val contentObj = msg.opt("content")
             if (contentObj is String) {
@@ -148,237 +164,164 @@ object OpenAiToGeminiTranslator {
         return openAiResponse.toString()
     }
 
+    // ------------------------------------------------------------------------
+    // Local LiteRT-LM path
+    // ------------------------------------------------------------------------
+
+    data class LocalEngineRequest(
+        val systemInstruction: String?,
+        val history: List<LiteRtLmEngine.HistoryTurn>,
+        val latestUserText: String,
+        val maxTokens: Int,
+        val temperature: Float,
+        val topK: Int,
+        val topP: Float
+    )
+
     /**
-     * Solves simple user prompts (such as math expressions and keywords) when in simulation mode.
+     * Extracts a request shaped for the LiteRT-LM Kotlin SDK from an OpenAI
+     * chat.completions JSON body.
+     *
+     * Mapping:
+     *  - All `system` role messages are concatenated into a single system instruction.
+     *  - All `assistant` and prior `user` messages become history turns.
+     *  - The last `user` message is split out as the live prompt for `generate(...)`.
+     *  - `max_tokens` / `max_completion_tokens` / `temperature` / `top_p` / `top_k`
+     *    are extracted with sensible defaults.
      */
-    private fun solveSimplePrompt(prompt: String, model: String): String {
-        val clean = prompt.trim().lowercase().removeSuffix("?").trim()
+    fun extractLocalEngineRequest(openAiJson: String): LocalEngineRequest {
+        val obj = JSONObject(openAiJson)
+        val msgs = obj.optJSONArray("messages") ?: JSONArray()
 
-        // 1. Fully robust, direct math calculation matcher
-        val cleanMath = clean.replace(" ", "")
-        val mathOperators = charArrayOf('+', '-', '*', '/')
-        var operatorIdx = -1
-        var usedOp = ' '
-        for (op in mathOperators) {
-            val idx = cleanMath.indexOf(op)
-            if (idx > 0) { // must have a number before the operator
-                operatorIdx = idx
-                usedOp = op
-                break
-            }
+        val systemPieces = mutableListOf<String>()
+        val turns = mutableListOf<LiteRtLmEngine.HistoryTurn>()
+        var lastUserText = ""
+
+        // First pass: collect system + history (all turns except the trailing user one).
+        // We need to know which user message is the LAST one to peel it off.
+        val lastUserIdx = (0 until msgs.length()).lastOrNull { i ->
+            msgs.optJSONObject(i)?.optString("role") == "user"
         }
 
-        if (operatorIdx != -1) {
-            val leftStr = cleanMath.substring(0, operatorIdx).filter { it.isDigit() }
-            val rightStr = cleanMath.substring(operatorIdx + 1).filter { it.isDigit() }
-            val num1 = leftStr.toIntOrNull()
-            val num2 = rightStr.toIntOrNull()
-            if (num1 != null && num2 != null) {
-                val result = when (usedOp) {
-                    '+' -> num1 + num2
-                    '-' -> num1 - num2
-                    '*' -> num1 * num2
-                    '/' -> if (num2 != 0) num1 / num2 else "Undefined"
-                    else -> null
-                }
-                if (result != null) {
-                    return result.toString()
-                }
-            }
-        }
+        for (i in 0 until msgs.length()) {
+            val msg = msgs.getJSONObject(i)
+            val role = msg.optString("role", "user")
+            val text = extractTextFromContent(msg.opt("content"))
 
-        // 2. ATS / Candidate screening
-        if (clean.contains("candidate") || clean.contains("resume") || clean.contains("qualifications") || clean.contains("alice smith")) {
-            return """
-                Based on candidate assessment criteria, here is the professional evaluation:
-                
-                - **Candidate Profile**: Alice Smith
-                - **Expertise Level**: Senior Android Engineer (8+ years experience)
-                - **Key Qualifications**: Expert in Kotlin, Jetpack Compose, Room Database architecture, and high-performance offline proxy systems.
-                - **Evaluation Score**: **A+** (Highly qualified)
-                - **Recommendation**: Proceed to live coding interview stage.
-            """.trimIndent()
-        }
-
-        // 3. Date and Time queries (Indonesian & English)
-        if (clean.contains("tanggal") || clean.contains("hari ini") || clean.contains("sekarang") || clean.contains("date") || clean.contains("today") || clean.contains("time") || clean.contains("jam") || clean.contains("pukul")) {
-            val dateObj = java.util.Date()
-            val idLocale = java.util.Locale("id", "ID")
-            val formattedDate = java.text.SimpleDateFormat("dd MMMM yyyy", idLocale).format(dateObj)
-            
-            if (clean.contains("tanggal") || clean.contains("date")) {
-                if (clean.contains("tanggal berapa") || clean.contains("what date") || clean.contains("sekarang") || clean.contains("hari ini") || clean.contains("today")) {
-                    if (clean.contains("tanggal") && (clean.contains("sekarang") || clean.contains("hari ini") || clean.contains("indonesia") || clean.contains("id"))) {
-                        return "Sekarang tanggal $formattedDate."
+            when (role) {
+                "system" -> if (text.isNotEmpty()) systemPieces.add(text)
+                "assistant" -> turns.add(
+                    LiteRtLmEngine.HistoryTurn(LiteRtLmEngine.HistoryRole.ASSISTANT, text)
+                )
+                else /* user or anything else */ -> {
+                    if (i == lastUserIdx) {
+                        lastUserText = text
+                    } else {
+                        turns.add(LiteRtLmEngine.HistoryTurn(LiteRtLmEngine.HistoryRole.USER, text))
                     }
-                    val englishDate = java.text.SimpleDateFormat("MMMM dd, yyyy", java.util.Locale.US).format(dateObj)
-                    return "Today's date is $englishDate."
                 }
             }
-            if (clean.contains("jam") || clean.contains("time") || clean.contains("pukul")) {
-                val formattedTime = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()).format(dateObj)
-                return "Waktu saat ini adalah pukul $formattedTime."
-            }
-            if (clean.contains("hari") || clean.contains("day")) {
-                val dayName = java.text.SimpleDateFormat("EEEE", idLocale).format(dateObj)
-                return "Hari ini adalah hari $dayName."
-            }
         }
 
-        // 4. Keep conversing nicely if greeting
-        if (clean == "hello" || clean == "hi" || clean == "hey" || clean == "greetings" || clean == "halo") {
-            return "Hello! I am your local AI proxy assistant. How can I help you analyze candidates or process test cases today?"
-        }
+        // Defensive: no trailing user message at all → use empty prompt; the
+        // engine will still produce a continuation based on history.
+        val systemText = if (systemPieces.isEmpty()) null else systemPieces.joinToString("\n\n")
 
-        // 5. Clean professional fallback with no mock/simulation indicators
-        return "I have successfully processed your prompt \"$prompt\" on the local offline LiteRT-LM engine. If you need any specific computation, local operations, or have additional tasks, I am ready to help."
+        val maxTokens = (obj.opt("max_tokens") as? Number)?.toInt()
+            ?: (obj.opt("max_completion_tokens") as? Number)?.toInt()
+            ?: 1024
+        val temperature = (obj.opt("temperature") as? Number)?.toFloat() ?: 1.0f
+        val topP = (obj.opt("top_p") as? Number)?.toFloat() ?: 0.95f
+        val topK = (obj.opt("top_k") as? Number)?.toInt() ?: 64
+
+        return LocalEngineRequest(
+            systemInstruction = systemText,
+            history = turns,
+            latestUserText = lastUserText,
+            maxTokens = maxTokens,
+            temperature = temperature,
+            topK = topK,
+            topP = topP
+        )
     }
 
-    /**
-     * Generates a simulated response matching a specified model.
-     * Supports highly realistic thinking logs if the model is a thinking-distilled model like DeepSeek R1!
-     */
-    fun generateSimulatedResponse(openAiJson: String, openAiModel: String): String {
-        val openAiObj = JSONObject(openAiJson)
-        val messages = openAiObj.optJSONArray("messages") ?: JSONArray()
-        var userPrompt = "Hello!"
-        if (messages.length() > 0) {
-            val lastMsg = messages.optJSONObject(messages.length() - 1)
-            if (lastMsg != null) {
-                val contentObj = lastMsg.opt("content")
-                if (contentObj is String) {
-                    userPrompt = contentObj
-                } else if (contentObj is JSONArray) {
-                    val sb = StringBuilder()
-                    for (k in 0 until contentObj.length()) {
-                        val item = contentObj.optJSONObject(k)
-                        if (item != null && item.optString("type") == "text") {
-                            sb.append(item.optString("text"))
-                        }
-                    }
-                    userPrompt = sb.toString()
-                }
-            }
-        }
-
+    /** Wraps a successful LiteRT-LM response in an OpenAI Chat Completion JSON. */
+    fun wrapLocalSuccess(result: LiteRtLmEngine.Result.Ok, openAiModel: String): String {
         val chatCmplId = "chatcmpl-" + UUID.randomUUID().toString().replace("-", "").take(24)
         val createdSeconds = System.currentTimeMillis() / 1000
 
-        // Build customized, intelligent, highly realistic response based on the prompt
-        val hasThinking = openAiModel.contains("DeepSeek-R1", ignoreCase = true) || openAiModel.contains("gemma-4", ignoreCase = true)
-        
-        val solvedAnswer = solveSimplePrompt(userPrompt, openAiModel)
-        val replyText = if (hasThinking) {
-            """
-                <think>
-                1. User is asking: "$userPrompt"
-                2. Analyzing model choice: Current model in use is local $openAiModel.
-                3. Compiling the optimal response structure on-device.
-                4. Accelerating inference via NPU/GPU pipelines... Done.
-                </think>
-                $solvedAnswer
-            """.trimIndent()
+        // If the model exposes a separate "thought" channel (gemma-4 thinking,
+        // DeepSeek R1, etc.), render it inside <think>...</think> ahead of the
+        // final answer. This matches the convention OpenAI-compatible clients
+        // recognize for reasoning models.
+        val replyContent = if (!result.thinkingText.isNullOrBlank()) {
+            "<think>\n${result.thinkingText}\n</think>\n${result.text}"
         } else {
-            solvedAnswer
+            result.text
         }
 
-        val choiceObj = JSONObject()
+        val choice = JSONObject()
             .put("index", 0)
-            .put("message", JSONObject().put("role", "assistant").put("content", replyText))
+            .put("message", JSONObject().put("role", "assistant").put("content", replyContent))
             .put("finish_reason", "stop")
 
-        val choicesArr = JSONArray().put(choiceObj)
-
-        val usageObj = JSONObject()
-            .put("prompt_tokens", userPrompt.length / 4 + 8)
-            .put("completion_tokens", replyText.length / 4)
-            .put("total_tokens", (userPrompt.length / 4 + 8) + replyText.length / 4)
+        val usage = JSONObject()
+            .put("prompt_tokens", result.promptTokens)
+            .put("completion_tokens", result.completionTokens)
+            .put("total_tokens", result.promptTokens + result.completionTokens)
 
         return JSONObject()
             .put("id", chatCmplId)
             .put("object", "chat.completion")
             .put("created", createdSeconds)
             .put("model", openAiModel)
-            .put("choices", choicesArr)
-            .put("usage", usageObj)
+            .put("choices", JSONArray().put(choice))
+            .put("usage", usage)
+            // Honest provenance: real backend used + measured latency. No fabricated metrics.
+            .put("system_fingerprint", "litertlm:${result.backendUsed}:${result.totalLatencyMs}ms")
             .toString()
     }
 
     /**
-     * Generates a high-fidelity offline response mimicking native on-device LiteRT-LM weight execution.
+     * Maps a LiteRT-LM error onto an OpenAI-shaped error envelope and an HTTP status code.
      */
-    fun generateLiteRtLmResponse(openAiJson: String, openAiModel: String, modelPath: String): String {
-        val openAiObj = JSONObject(openAiJson)
-        val messages = openAiObj.optJSONArray("messages") ?: JSONArray()
-        var userPrompt = "Hello!"
-        if (messages.length() > 0) {
-            val lastMsg = messages.optJSONObject(messages.length() - 1)
-            if (lastMsg != null) {
-                val contentObj = lastMsg.opt("content")
-                if (contentObj is String) {
-                    userPrompt = contentObj
-                } else if (contentObj is JSONArray) {
-                    val sb = StringBuilder()
-                    for (k in 0 until contentObj.length()) {
-                        val item = contentObj.optJSONObject(k)
-                        if (item != null && item.optString("type") == "text") {
-                            sb.append(item.optString("text"))
-                        }
-                    }
-                    userPrompt = sb.toString()
-                }
-            }
+    fun wrapLocalError(err: LiteRtLmEngine.Result.Err, openAiModel: String): Pair<Int, String> {
+        val status = when (err.type) {
+            "model_not_found" -> 400
+            "engine_not_ready" -> 500
+            "engine_load_failed" -> 500
+            "conversation_init_failed" -> 500
+            "inference_failed" -> 500
+            else -> 500
         }
-
-        val chatCmplId = "chatcmpl-" + UUID.randomUUID().toString().replace("-", "").take(24)
-        val createdSeconds = System.currentTimeMillis() / 1000
-
-        val hasThinking = openAiModel.contains("DeepSeek-R1", ignoreCase = true) || openAiModel.contains("gemma-4", ignoreCase = true)
-        
-        val solvedAnswer = solveSimplePrompt(userPrompt, openAiModel)
-        
-        val header = """
-            [LiteRT-LM Native Engine - Offline On-Device High-Speed Accelerator Execution]
-            - Loaded Model Weight Path: $modelPath
-            - Resource Allocator Pipeline: GPU & CPU Accelerators Linked
-            - Performance Metrics: 45.2 tokens/second (Time-to-first-token: 120ms)
-            - Security Context: 100% Confidential Offline Sandbox (No network telemetry transmitted)
-            --------------------------------------------------------------------------------
-            
-        """.trimIndent()
-
-        val replyText = if (hasThinking) {
-            """
-                <think>
-                1. Checking local file storage: Successfully located and read model binary weights at '$modelPath'.
-                2. Initiating GPU-accelerated LiteRT-LM interpreter.
-                3. Running feed-forward neural layers for prompt: "$userPrompt".
-                4. Structuring deep-thinking blocks for model: $openAiModel.
-                </think>
-                $header$solvedAnswer
-            """.trimIndent()
-        } else {
-            "$header$solvedAnswer"
-        }
-
-        val choiceObj = JSONObject().put("index", 0)
-            .put("message", JSONObject().put("role", "assistant").put("content", replyText))
-            .put("finish_reason", "stop")
-
-        val choicesArr = JSONArray().put(choiceObj)
-
-        val usageObj = JSONObject()
-            .put("prompt_tokens", userPrompt.length / 4 + 8)
-            .put("completion_tokens", replyText.length / 4)
-            .put("total_tokens", (userPrompt.length / 4 + 8) + replyText.length / 4)
-
-        return JSONObject()
-            .put("id", chatCmplId)
-            .put("object", "chat.completion")
-            .put("created", createdSeconds)
+        val body = JSONObject()
+            .put("error", JSONObject()
+                .put("message", err.message)
+                .put("type", err.type)
+                .put("code", status))
             .put("model", openAiModel)
-            .put("choices", choicesArr)
-            .put("usage", usageObj)
             .toString()
+        return status to body
+    }
+
+    // ------------------------------------------------------------------------
+    // Helpers
+    // ------------------------------------------------------------------------
+
+    private fun extractTextFromContent(content: Any?): String {
+        return when (content) {
+            is String -> content
+            is JSONArray -> {
+                val sb = StringBuilder()
+                for (i in 0 until content.length()) {
+                    val item = content.optJSONObject(i) ?: continue
+                    if (item.optString("type") == "text") {
+                        sb.append(item.optString("text"))
+                    }
+                }
+                sb.toString()
+            }
+            else -> ""
+        }
     }
 }
