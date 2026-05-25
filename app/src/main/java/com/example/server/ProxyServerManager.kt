@@ -5,6 +5,9 @@ import android.util.Log
 import com.example.BuildConfig
 import com.example.data.GatewayLog
 import com.example.data.GatewayRepository
+import com.example.data.ModelsRegistry
+import com.example.data.ProxySetting
+import com.example.data.RuntimeType
 import com.example.inference.LiteRtLmEngine
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -402,44 +405,47 @@ class ProxyServerManager(
                             }
                         }
 
-                        // 2. Handle GET Models request
+                        // 2. Handle GET Models request.
+                        //
+                        // The registry is now the single source of truth (see
+                        // plan.md §5.4). Every id we list here is guaranteed to
+                        // route successfully under the current targetProvider —
+                        // no advertised id is unreachable.
                         if (isModelsEndpoint) {
-                            val modelsList = org.json.JSONArray()
-                            com.example.data.ModelsRegistry.allowedModels.forEach { model ->
-                                var isAvailable = false
-                                if (model.runtimeType == "aicore") {
-                                    isAvailable = true
-                                } else if (model.runtimeType == "litert-lm") {
-                                    val file = model.getResolvedTargetFile(context)
-                                    if (file.exists() && file.isFile && file.length() > 0) {
-                                        isAvailable = true
-                                    }
-                                }
-
-                                if (isAvailable) {
-                                    val mObj = org.json.JSONObject()
-                                        .put("id", model.modelId)
-                                        .put("object", "model")
-                                        .put("created", 1710000000)
-                                        .put("owned_by", "gateway-local")
-                                    modelsList.put(mObj)
-                                }
+                            val cloudKeyPresent = run {
+                                val deviceKey = settings?.geminiApiKey ?: ""
+                                val resolved = if (deviceKey.isNotEmpty()) deviceKey else BuildConfig.GEMINI_API_KEY
+                                resolved.isNotEmpty() && resolved != "MY_GEMINI_API_KEY"
                             }
 
-                            // Add only valid Google Gemini cloud models for compatibility
-                            val geminiCloudModels = listOf(
-                                "gemini-2.5-flash",
-                                "gemini-2.5-pro",
-                                "gemini-1.5-flash",
-                                "gemini-1.5-pro"
-                            )
-                            geminiCloudModels.forEach { id ->
-                                val mObj = org.json.JSONObject()
-                                    .put("id", id)
-                                    .put("object", "model")
-                                    .put("created", 1710000000)
-                                    .put("owned_by", "google-cloud")
-                                modelsList.put(mObj)
+                            val modelsList = org.json.JSONArray()
+                            ModelsRegistry.allowedModels.forEach { m ->
+                                val available = when (m.runtimeType) {
+                                    RuntimeType.CLOUD -> cloudKeyPresent
+                                    RuntimeType.LITERT_LM -> {
+                                        val f = m.getResolvedTargetFile(context)
+                                        f.exists() && f.isFile && f.length() > 0
+                                    }
+                                    // AICore is registered but not yet implemented;
+                                    // do not advertise a model we cannot serve.
+                                    RuntimeType.AICORE -> false
+                                }
+                                if (!available) return@forEach
+
+                                val ownedBy = when (m.runtimeType) {
+                                    RuntimeType.CLOUD -> "google-cloud"
+                                    RuntimeType.LITERT_LM -> "gateway-local"
+                                    RuntimeType.AICORE -> "android-aicore"
+                                }
+                                modelsList.put(
+                                    org.json.JSONObject()
+                                        .put("id", m.modelId)
+                                        .put("object", "model")
+                                        .put("created", 1710000000)
+                                        .put("owned_by", ownedBy)
+                                        .put("x_runtime", m.runtimeType.name)
+                                        .put("x_experimental", m.experimental)
+                                )
                             }
 
                             val responseObj = org.json.JSONObject()
@@ -493,73 +499,82 @@ class ProxyServerManager(
                             Log.e("ProxyServerManager", "Failed to parse requested input JSON model ID", e)
                         }
 
-                        // Determine active routing mode (Local Simulator vs Cloud Gemini Proxy)
-                        val isCloudMode = settings?.targetProvider == "CLOUD_GEMINI"
+                        // Resolve the request to a concrete RoutedModel using
+                        // ModelsRegistry as the single source of truth. The router
+                        // does all the validation: unknown id, provider mismatch,
+                        // missing weights, missing key. See ModelRouter.kt.
+                        val resolvedSettings = settings ?: ProxySetting()
+                        val deviceGeminiKey = settings?.geminiApiKey ?: ""
+                        val effectiveGeminiKey = if (deviceGeminiKey.isNotEmpty()) {
+                            deviceGeminiKey
+                        } else {
+                            BuildConfig.GEMINI_API_KEY
+                        }
+                        val cloudKeyPresent = effectiveGeminiKey.isNotEmpty() &&
+                                effectiveGeminiKey != "MY_GEMINI_API_KEY"
 
-                        if (isCloudMode) {
-                            // Resolve Gemini API key: prioritize device-stored settings key, then fall back to BuildConfig key
-                            val deviceKey = settings?.geminiApiKey ?: ""
-                            val geminiKey = if (deviceKey.isNotEmpty()) deviceKey else BuildConfig.GEMINI_API_KEY
+                        val routeResult = ModelRouter.resolve(
+                            requestedId = requestModel,
+                            settings = resolvedSettings,
+                            weightsAvailable = { m ->
+                                val f = m.getResolvedTargetFile(context)
+                                f.exists() && f.length() > 0
+                            },
+                            hasCloudKey = { cloudKeyPresent }
+                        )
 
-                            if (geminiKey.isEmpty() || geminiKey == "MY_GEMINI_API_KEY") {
-                                httpStatus = 500
-                                outputResponseText = "{\"error\": {\"message\": \"Gemini API Key is missing. Please configure it in your Device Settings form or add it via the Secrets/Properties configuration.\", \"type\": \"gateway_setup_error\"}}"
-                                sendJsonResponse(outputStream, 500, outputResponseText)
-                            } else {
-                                // Translate to standard Gemini payloads
-                                val geminiPayload = OpenAiToGeminiTranslator.translateRequest(rawBody)
+                        if (routeResult.isFailure) {
+                            // Router said no — render the typed RoutingError
+                            // through the shared OpenAI-shaped error envelope.
+                            val re = routeResult.exceptionOrNull() as? RoutingErrorException
+                            val err: RoutingError = re?.error ?: RoutingError.UnknownModel(requestModel)
+                            httpStatus = err.httpStatus
+                            outputResponseText = HttpErrors.jsonError(err)
+                            sendJsonResponse(outputStream, err.httpStatus, outputResponseText)
+                        } else {
+                            when (val routed = routeResult.getOrNull()!!) {
+                                is RoutedModel.Cloud -> {
+                                    // Cloud Gemini: cloudUpstreamId is set by the
+                                    // registry for every CLOUD entry, so the old
+                                    // substring-`pro` heuristic is gone. The
+                                    // upstream id is whatever the registry says.
+                                    val upstreamId = routed.info.cloudUpstreamId ?: routed.info.modelId
 
-                                // Forward request to Google Gemini API
-                                val mediaType = "application/json".toMediaType()
-                                val reqBodyArgs = geminiPayload.toRequestBody(mediaType)
+                                    val geminiPayload = OpenAiToGeminiTranslator.translateRequest(rawBody)
+                                    val mediaType = "application/json".toMediaType()
+                                    val reqBodyArgs = geminiPayload.toRequestBody(mediaType)
+                                    val geminiUrl = "https://generativelanguage.googleapis.com/v1beta/models/" +
+                                            "$upstreamId:generateContent?key=$effectiveGeminiKey"
 
-                                // Map model type
-                                val geminiModelId = if (requestModel.contains("pro", ignoreCase = true)) {
-                                    "gemini-2.5-pro"
-                                } else {
-                                    "gemini-2.5-flash"
-                                }
+                                    val googleRequest = Request.Builder()
+                                        .url(geminiUrl)
+                                        .post(reqBodyArgs)
+                                        .build()
 
-                                val geminiUrl = "https://generativelanguage.googleapis.com/v1beta/models/$geminiModelId:generateContent?key=$geminiKey"
-                                
-                                val googleRequest = Request.Builder()
-                                    .url(geminiUrl)
-                                    .post(reqBodyArgs)
-                                    .build()
+                                    okHttpClient.newCall(googleRequest).execute().use { response ->
+                                        val code = response.code
+                                        val responseBody = response.body?.string() ?: ""
 
-                                okHttpClient.newCall(googleRequest).execute().use { response ->
-                                    val code = response.code
-                                    val responseBody = response.body?.string() ?: ""
-
-                                    if (code == 200) {
-                                        // Translate response back to standard OpenAI
-                                        val openAiFormat = OpenAiToGeminiTranslator.translateResponse(responseBody, requestModel)
-                                        outputResponseText = openAiFormat
-                                        sendJsonResponse(outputStream, 200, openAiFormat)
-                                    } else {
-                                        httpStatus = code
-                                        outputResponseText = "{\"error\": {\"message\": \"Inward Gemini Error: $responseBody\", \"type\": \"upstream_error\", \"code\": $code}}"
-                                        sendJsonResponse(outputStream, code, outputResponseText)
+                                        if (code == 200) {
+                                            // Translate response back to standard OpenAI shape;
+                                            // requestModel (the client-facing id, possibly an alias)
+                                            // is returned to the caller verbatim.
+                                            val openAiFormat = OpenAiToGeminiTranslator.translateResponse(responseBody, requestModel)
+                                            outputResponseText = openAiFormat
+                                            sendJsonResponse(outputStream, 200, openAiFormat)
+                                        } else {
+                                            httpStatus = code
+                                            outputResponseText = HttpErrors.jsonError(
+                                                message = "Upstream Gemini error: $responseBody",
+                                                type = "upstream_error",
+                                                code = code
+                                            )
+                                            sendJsonResponse(outputStream, code, outputResponseText)
+                                        }
                                     }
                                 }
-                            }
-                        } else {
-                            val activeModelId = if (com.example.data.ModelsRegistry.allowedModels.any { it.modelId == requestModel }) {
-                                requestModel
-                            } else {
-                                settings?.activeModelId ?: "litert-community/gemma-4-E2B-it-litert-lm"
-                            }
-                            val activeModel = com.example.data.ModelsRegistry.getModelById(activeModelId)
-                            val isLocalVal = settings?.targetProvider == "LOCAL_VAL"
 
-                            if (isLocalVal) {
-                                val modelFile = activeModel.getResolvedTargetFile(context)
-                                val isDownloaded = modelFile.exists() && modelFile.length() > 0
-                                if (!isDownloaded) {
-                                    httpStatus = 400
-                                    outputResponseText = "{\"error\": {\"message\": \"Local LiteRT-LM model weights for '$activeModelId' are not downloaded. Please download the weights first through the gateway application UI before choosing the LiteRT-LM route.\", \"type\": \"model_not_found\", \"code\": 400}}"
-                                    sendJsonResponse(outputStream, 400, outputResponseText)
-                                } else {
+                                is RoutedModel.LiteRtLm -> {
                                     // Real on-device LiteRT-LM execution.
                                     // See app/src/main/java/com/example/inference/LiteRtLmEngine.kt
                                     // for the canonical lifecycle, mirroring google-ai-edge/gallery's LlmChatModelHelper.
@@ -572,7 +587,7 @@ class ProxyServerManager(
                                     )
                                     val loadErr = LiteRtLmEngine.ensureLoadedAndReset(
                                         context = context,
-                                        model = activeModel,
+                                        model = routed.info,
                                         params = params,
                                         systemInstruction = req.systemInstruction,
                                         history = req.history
@@ -597,10 +612,16 @@ class ProxyServerManager(
                                         }
                                     }
                                 }
-                            } else {
-                                httpStatus = 400
-                                outputResponseText = "{\"error\": {\"message\": \"Unsupported routing strategy or provider mismatch. Only Cloud Gemini API and local LiteRT-LM routes are supported.\", \"type\": \"unsupported_provider\", \"code\": 400}}"
-                                sendJsonResponse(outputStream, 400, outputResponseText)
+
+                                is RoutedModel.AiCore -> {
+                                    // Defensive — ModelRouter rejects AICore upstream
+                                    // with AiCoreUnsupported, so this branch is unreachable
+                                    // unless the router is bypassed in the future.
+                                    val err = RoutingError.AiCoreUnsupported(routed.info.modelId)
+                                    httpStatus = err.httpStatus
+                                    outputResponseText = HttpErrors.jsonError(err)
+                                    sendJsonResponse(outputStream, err.httpStatus, outputResponseText)
+                                }
                             }
                         }
 
@@ -677,6 +698,11 @@ class ProxyServerManager(
             400 -> "400 Bad Request"
             401 -> "401 Unauthorized"
             404 -> "404 Not Found"
+            413 -> "413 Content Too Large"
+            429 -> "429 Too Many Requests"
+            501 -> "501 Not Implemented"
+            502 -> "502 Bad Gateway"
+            503 -> "503 Service Unavailable"
             else -> "500 Internal Server Error"
         }
 
@@ -711,6 +737,9 @@ class ProxyServerManager(
             400 -> "400 Bad Request"
             401 -> "401 Unauthorized"
             404 -> "404 Not Found"
+            413 -> "413 Content Too Large"
+            429 -> "429 Too Many Requests"
+            501 -> "501 Not Implemented"
             else -> "500 Internal Server Error"
         }
         writer.print("HTTP/1.1 $statusMsg\r\n")

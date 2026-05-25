@@ -537,10 +537,10 @@ fun GatewayScreen(
 
                                     // Execution platform
                                     Badge(
-                                        containerColor = if (model.runtimeType == "aicore") Color(0xFF3B82F6) else Color(0xFFF59E0B),
+                                        containerColor = if (model.runtimeType == com.example.data.RuntimeType.AICORE) Color(0xFF3B82F6) else Color(0xFFF59E0B),
                                         contentColor = Color.White
                                     ) {
-                                        Text(model.runtimeType.uppercase(), fontSize = 8.sp, modifier = Modifier.padding(2.dp))
+                                        Text(model.runtimeType.name, fontSize = 8.sp, modifier = Modifier.padding(2.dp))
                                     }
 
                                     if (model.llmSupportThinking) {

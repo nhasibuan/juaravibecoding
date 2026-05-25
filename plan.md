@@ -12,7 +12,7 @@
 | Workstream | Status | Where |
 |---|---|---|
 | A. Replace `generateLiteRtLmResponse` with real LiteRT-LM inference | **✅ Implemented** | [PR #1 `litert-lm-real-inference`](https://github.com/nhasibuan/juaravibecoding/pull/1) |
-| B. Tighten model routing so `/v1/models` matches dispatch | ⏳ Queued — to be opened after PR #1 merges | _TBD_ |
+| B. Tighten model routing so `/v1/models` matches dispatch | **✅ Implemented** | PR #2 `routing-correctness` |
 
 **Evidence that A is done in PR #1:**
 
@@ -500,13 +500,13 @@ A reviewer can verify each of the following from the code and CI alone:
 | # | Criterion | PR | Status |
 |---|---|---|---|
 | 1 | `OpenAiToGeminiTranslator` contains **no** function that fabricates token counts, latency numbers, or hardcoded canned responses. | #1 | ✅ Met (simulator deleted; `system_fingerprint` carries real `<latencyMs>ms`) |
-| 2 | Every model id returned by `GET /v1/models` resolves to a successful route in `ModelRouter` under the current `targetProvider`. | #2 | ⏳ |
-| 3 | Requesting an unknown model id returns HTTP 400 with `{"error":{"type":"model_not_found", ...}}`. | #2 | ⏳ |
-| 4 | Requesting a known model id whose runtime doesn't match the configured provider returns HTTP 400 with `type = "provider_mismatch"`. | #2 | ⏳ |
+| 2 | Every model id returned by `GET /v1/models` resolves to a successful route in `ModelRouter` under the current `targetProvider`. | #2 | ✅ Registry is the single source of truth; `/v1/models` filters by per-runtime availability |
+| 3 | Requesting an unknown model id returns HTTP 400 with `{"error":{"type":"model_not_found", ...}}`. | #2 | ✅ `ModelRouter.UnknownModel` |
+| 4 | Requesting a known model id whose runtime doesn't match the configured provider returns HTTP 400 with `type = "provider_mismatch"`. | #2 | ✅ `ModelRouter.ProviderMismatch` (both directions covered in `ModelRouterTest`) |
 | 5 | `LiteRtLmEngine.generate(...)` runs against a real loaded `.litertlm` file. | #1 | ✅ Code path is real; pending on-device smoke verification (§7.3) |
-| 6 | `ModelRouterTest` passes with ≥ 6 cases covering each `RoutingError` subclass. | #2 | ⏳ |
-| 7 | `getModelById` either: (a) is deleted, or (b) is `@Deprecated` and throws on unknown id — never silently returns `allowedModels[1]`. | #2 | ⏳ (still silent in `main` and in #1; intentional for #1's minimal scope) |
-| 8 | The `"MOCK"` provider literal is gone from `ProxySetting.kt`. | #2 | ⏳ |
+| 6 | `ModelRouterTest` passes with ≥ 6 cases covering each `RoutingError` subclass. | #2 | ✅ 14 cases shipped; covers all 5 error subclasses + happy paths + alias resolution + callback laziness |
+| 7 | `getModelById` either: (a) is deleted, or (b) is `@Deprecated` and throws on unknown id — never silently returns `allowedModels[1]`. | #2 | ✅ `@Deprecated` + throws `NoSuchElementException`; only caller left is its own deprecation block |
+| 8 | The `"MOCK"` provider literal is gone from `ProxySetting.kt`. | #2 | ✅ |
 | 9 | `README.md` claim *"No fake simulations or mock fallbacks are used"* is now true. | #1 | ✅ True after #1 merges (a dedicated README cleanup PR is still tracked in §11). |
 
 ---
