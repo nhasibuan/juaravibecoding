@@ -19,6 +19,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -520,6 +521,14 @@ fun GatewayScreen(
 
                     ModelsRegistry.allowedModels.forEach { model ->
                         val isSelected = model.modelId == activeModelId
+                        val targetProvider = settings?.targetProvider ?: "CLOUD_GEMINI"
+                        val isCompatible = when (model.runtimeType) {
+                            "cloud" -> targetProvider == "CLOUD_GEMINI"
+                            "litert-lm" -> targetProvider == "LOCAL_VAL"
+                            "aicore" -> targetProvider == "LOCAL_VAL"
+                            else -> false
+                        }
+
                         Card(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -529,13 +538,19 @@ fun GatewayScreen(
                                     color = if (isSelected) accentCyan else Color.Transparent,
                                     shape = RoundedCornerShape(12.dp)
                                 )
-                                .clickable {
-                                    viewModel.changeActiveModel(model.modelId)
-                                    val modeInfo = if (settings?.targetProvider == "LOCAL_VAL") "and set as default fallback local engine!" else "but Cloud routing is currently active"
-                                    Toast.makeText(context, "Default fallback set to: ${model.name} ($modeInfo)", Toast.LENGTH_LONG).show()
-                                },
+                                .then(
+                                    if (isCompatible) {
+                                        Modifier.clickable {
+                                            viewModel.changeActiveModel(model.modelId)
+                                            val modeInfo = if (settings?.targetProvider == "LOCAL_VAL") "and set as default fallback local engine!" else "but Cloud routing is currently active"
+                                            Toast.makeText(context, "Default fallback set to: ${model.name} ($modeInfo)", Toast.LENGTH_LONG).show()
+                                        }
+                                    } else {
+                                        Modifier
+                                    }
+                                ),
                             colors = CardDefaults.cardColors(
-                                containerColor = if (isSelected) Color(0xFF1E293B) else Color(0xFF0F172A).copy(alpha = 0.6f)
+                                containerColor = if (isSelected) Color(0xFF1E293B) else Color(0xFF0F172A).copy(alpha = if (isCompatible) 0.6f else 0.25f)
                             ),
                             shape = RoundedCornerShape(12.dp)
                         ) {
@@ -543,6 +558,9 @@ fun GatewayScreen(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .padding(12.dp)
+                                    .graphicsLayer {
+                                        alpha = if (isCompatible) 1.0f else 0.45f
+                                    }
                             ) {
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
@@ -570,6 +588,34 @@ fun GatewayScreen(
                                                     ) {
                                                         Text(
                                                             text = if (isLocalRouting) "DEFAULT LOCAL ENGINE" else "DEFAULT STANDBY (CLOUDS ACTIVE)",
+                                                            fontSize = 8.sp,
+                                                            fontWeight = FontWeight.Bold,
+                                                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                                                        )
+                                                    }
+                                                }
+                                                if (!isCompatible) {
+                                                    Spacer(modifier = Modifier.width(8.dp))
+                                                    Badge(
+                                                        containerColor = Color.Red.copy(alpha = 0.7f),
+                                                        contentColor = Color.White
+                                                    ) {
+                                                        Text(
+                                                            text = if (targetProvider == "LOCAL_VAL") "REQUIRES CLOUD STRATEGY" else "REQUIRES LOCAL STRATEGY",
+                                                            fontSize = 8.sp,
+                                                            fontWeight = FontWeight.Bold,
+                                                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                                                        )
+                                                    }
+                                                }
+                                                if (model.experimental) {
+                                                    Spacer(modifier = Modifier.width(8.dp))
+                                                    Badge(
+                                                        containerColor = Color(0xFFF59E0B), // Orange
+                                                        contentColor = Color.Black
+                                                    ) {
+                                                        Text(
+                                                            text = "EXPERIMENTAL",
                                                             fontSize = 8.sp,
                                                             fontWeight = FontWeight.Bold,
                                                             modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)

@@ -232,6 +232,11 @@ class ProxyServerManager(
 
     suspend fun stopServer() = withContext(Dispatchers.IO) {
         isRunningLoop = false
+        try {
+            com.example.inference.LiteRtLmEngine.close()
+        } catch (t: Throwable) {
+            Log.e("ProxyServerManager", "Error closing LiteRtLmEngine during stopServer", t)
+        }
         serverMutex.withLock {
             if (!_isServerRunning.value && serverSocket == null) return@withLock
             try {
@@ -247,6 +252,9 @@ class ProxyServerManager(
 
     fun stopServerSync() {
         isRunningLoop = false
+        try {
+            com.example.inference.LiteRtLmEngine.cancel()
+        } catch (_: Throwable) {}
         try {
             serverSocket?.close()
             serverSocket = null
@@ -403,47 +411,37 @@ class ProxyServerManager(
                         if (isModelsEndpoint) {
                             val activeModelId = settings?.activeModelId ?: "litert-community/gemma-4-E2B-it-litert-lm"
                             val modelsList = org.json.JSONArray()
+                            
+                            val targetProvider = settings?.targetProvider ?: "CLOUD_GEMINI"
+                            val deviceKey = settings?.geminiApiKey ?: ""
+                            val geminiKey = if (deviceKey.isNotEmpty()) deviceKey else BuildConfig.GEMINI_API_KEY
+                            val hasCloudKey = geminiKey.isNotEmpty() && geminiKey != "MY_GEMINI_API_KEY"
+
                             com.example.data.ModelsRegistry.allowedModels.forEach { model ->
-                                var isAvailable = false
-                                if (model.runtimeType == "aicore") {
-                                    isAvailable = true
-                                } else if (model.runtimeType == "litert-lm") {
-                                    val file = model.getResolvedTargetFile(context)
-                                    if (file.exists() && file.isFile && file.length() > 0) {
-                                        isAvailable = true
+                                val available = when (model.runtimeType) {
+                                    "cloud" -> (targetProvider == "CLOUD_GEMINI" && hasCloudKey)
+                                    "litert-lm" -> {
+                                        if (targetProvider == "LOCAL_VAL") {
+                                            val file = model.getResolvedTargetFile(context)
+                                            try { file.exists() && file.isFile && file.length() > 0 } catch (_: Throwable) { false }
+                                        } else {
+                                            false
+                                        }
                                     }
+                                    "aicore" -> false
+                                    else -> false
                                 }
 
-                                // Always return the currently selected active local model
-                                if (model.modelId == activeModelId) {
-                                    isAvailable = true
-                                }
-
-                                if (isAvailable) {
+                                if (available) {
                                     val mObj = org.json.JSONObject()
                                         .put("id", model.modelId)
                                         .put("object", "model")
                                         .put("created", 1710000000)
-                                        .put("owned_by", "gateway-local")
+                                        .put("owned_by", if (model.runtimeType == "cloud") "google-cloud" else "gateway-local")
                                         .put("selected", model.modelId == activeModelId)
+                                        .put("x_runtime", model.runtimeType)
                                     modelsList.put(mObj)
                                 }
-                            }
-
-                            // Add only valid Google Gemini cloud models for compatibility
-                            val geminiCloudModels = listOf(
-                                "gemini-2.5-flash",
-                                "gemini-2.5-pro",
-                                "gemini-1.5-flash",
-                                "gemini-1.5-pro"
-                            )
-                            geminiCloudModels.forEach { id ->
-                                val mObj = org.json.JSONObject()
-                                    .put("id", id)
-                                    .put("object", "model")
-                                    .put("created", 1710000000)
-                                    .put("owned_by", "google-cloud")
-                                modelsList.put(mObj)
                             }
 
                             val responseObj = org.json.JSONObject()
@@ -497,101 +495,106 @@ class ProxyServerManager(
                             Log.e("ProxyServerManager", "Failed to parse requested input JSON model ID", e)
                         }
 
-                        // Determine active routing mode (Local Simulator vs Cloud Gemini Proxy)
-                        val isCloudMode = settings?.targetProvider == "CLOUD_GEMINI"
+                        val deviceKey = settings?.geminiApiKey ?: ""
+                        val geminiKey = if (deviceKey.isNotEmpty()) deviceKey else BuildConfig.GEMINI_API_KEY
+                        val hasCloudKey = geminiKey.isNotEmpty() && geminiKey != "MY_GEMINI_API_KEY"
 
-                        if (isCloudMode) {
-                            // Resolve Gemini API key: prioritize device-stored settings key, then fall back to BuildConfig key
-                            val deviceKey = settings?.geminiApiKey ?: ""
-                            val geminiKey = if (deviceKey.isNotEmpty()) deviceKey else BuildConfig.GEMINI_API_KEY
+                        val routingResult = ModelRouter.resolve(
+                            requestedId = requestModel,
+                            settings = settings ?: com.example.data.ProxySetting(),
+                            weightsAvailable = { m ->
+                                val file = m.getResolvedTargetFile(context)
+                                try { file.exists() && file.isFile && file.length() > 0 } catch (_: Throwable) { false }
+                            },
+                            hasCloudKey = { hasCloudKey }
+                        )
 
-                            if (geminiKey.isEmpty() || geminiKey == "MY_GEMINI_API_KEY") {
-                                httpStatus = 500
-                                outputResponseText = "{\"error\": {\"message\": \"Gemini API Key is missing. Please configure it in your Device Settings form or add it via the Secrets/Properties configuration.\", \"type\": \"gateway_setup_error\"}}"
-                                sendJsonResponse(outputStream, 500, outputResponseText)
-                            } else {
-                                // Translate to standard Gemini payloads
-                                val geminiPayload = OpenAiToGeminiTranslator.translateRequest(rawBody)
-
-                                // Forward request to Google Gemini API
-                                val mediaType = "application/json".toMediaType()
-                                val reqBodyArgs = geminiPayload.toRequestBody(mediaType)
-
-                                // Map model type
-                                val geminiModelId = if (requestModel.contains("pro", ignoreCase = true)) {
-                                    "gemini-2.5-pro"
-                                } else {
-                                    "gemini-2.5-flash"
-                                }
-
-                                val geminiUrl = "https://generativelanguage.googleapis.com/v1beta/models/$geminiModelId:generateContent?key=$geminiKey"
-                                
-                                val googleRequest = Request.Builder()
-                                    .url(geminiUrl)
-                                    .post(reqBodyArgs)
-                                    .build()
-
-                                okHttpClient.newCall(googleRequest).execute().use { response ->
-                                    val code = response.code
-                                    val responseBody = response.body?.string() ?: ""
-
-                                    if (code == 200) {
-                                        // Translate response back to standard OpenAI
-                                        val openAiFormat = OpenAiToGeminiTranslator.translateResponse(responseBody, requestModel)
-                                        outputResponseText = openAiFormat
-                                        sendJsonResponse(outputStream, 200, openAiFormat)
-                                    } else {
-                                        httpStatus = code
-                                        outputResponseText = "{\"error\": {\"message\": \"Inward Gemini Error: $responseBody\", \"type\": \"upstream_error\", \"code\": $code}}"
-                                        sendJsonResponse(outputStream, code, outputResponseText)
-                                    }
-                                }
-                            }
+                        if (routingResult.isFailure) {
+                            val err = routingResult.exceptionOrNull() as? RoutingError ?: RoutingError.UnknownModel(requestModel)
+                            httpStatus = err.httpStatus
+                            outputResponseText = org.json.JSONObject()
+                                .put("error", org.json.JSONObject()
+                                    .put("message", err.msg)
+                                    .put("type", err.type)
+                                    .put("param", org.json.JSONObject.NULL)
+                                    .put("code", err.httpStatus)
+                                ).toString()
+                            sendJsonResponse(outputStream, httpStatus, outputResponseText)
                         } else {
-                            val activeModelId = if (com.example.data.ModelsRegistry.allowedModels.any { it.modelId == requestModel }) {
-                                requestModel
-                            } else {
-                                settings?.activeModelId ?: "litert-community/gemma-4-E2B-it-litert-lm"
-                            }
-                            val activeModel = com.example.data.ModelsRegistry.getModelById(activeModelId)
-                            val isLocalVal = settings?.targetProvider == "LOCAL_VAL"
+                            when (val routed = routingResult.getOrThrow()) {
+                                is RoutedModel.Cloud -> {
+                                    val cloudModelInfo = routed.info
+                                    val upstreamId = cloudModelInfo.cloudUpstreamId ?: cloudModelInfo.modelId
+                                    val geminiUrl = "https://generativelanguage.googleapis.com/v1beta/models/$upstreamId:generateContent?key=$geminiKey"
+                                    
+                                    val geminiPayload = OpenAiToGeminiTranslator.translateRequest(rawBody)
+                                    val mediaType = "application/json".toMediaType()
+                                    val reqBodyArgs = geminiPayload.toRequestBody(mediaType)
 
-                            if (isLocalVal) {
-                                val modelFile = activeModel.getResolvedTargetFile(context)
-                                val isDownloaded = modelFile.exists() && modelFile.length() > 0
-                                if (isDownloaded) {
-                                    var realInferenceResult: String? = null
-                                    val shouldBypass = (settings?.bypassGpu == true) || isEmulator()
-                                    if (shouldBypass) {
-                                        Log.w("ProxyServerManager", "Bypassing native LiteRT-LM GPU loading to avoid native SIGSEGV crash, using high-fidelity translation fallback. Reason: bypassGpuSetting=${settings?.bypassGpu}, isEmulator=${isEmulator()}")
-                                    } else {
-                                        try {
-                                            val prompt = OpenAiToGeminiTranslator.extractUserPrompt(rawBody)
-                                            // Secure lazy native class execution wrapper prevents unsatisfied link crash or initialization crash on startup
-                                            realInferenceResult = NativeLlmRunner.executeInference(context, modelFile.absolutePath, prompt, rawBody)
-                                        } catch (ex: Throwable) {
-                                            Log.e("ProxyServerManager", "Native LLM execution/loading failed (UnsatisfiedLinkError, unsupported architecture, or runtime error), using fallback", ex)
+                                    val googleRequest = Request.Builder()
+                                        .url(geminiUrl)
+                                        .post(reqBodyArgs)
+                                        .build()
+
+                                    okHttpClient.newCall(googleRequest).execute().use { response ->
+                                        val code = response.code
+                                        val responseBody = response.body?.string() ?: ""
+
+                                        if (code == 200) {
+                                            val openAiFormat = OpenAiToGeminiTranslator.translateResponse(responseBody, requestModel)
+                                            outputResponseText = openAiFormat
+                                            sendJsonResponse(outputStream, 200, openAiFormat)
+                                        } else {
+                                            httpStatus = code
+                                            outputResponseText = "{\"error\": {\"message\": \"Inward Gemini Error: $responseBody\", \"type\": \"upstream_error\", \"code\": $code}}"
+                                            sendJsonResponse(outputStream, code, outputResponseText)
                                         }
                                     }
-
-                                    // High-fidelity LiteRT-LM Local weights execution
-                                    val liteRtResponse = OpenAiToGeminiTranslator.generateLiteRtLmResponse(
-                                        rawBody,
-                                        requestModel,
-                                        modelFile.absolutePath,
-                                        realInferenceResult
-                                    )
-                                    outputResponseText = liteRtResponse
-                                    sendJsonResponse(outputStream, 200, liteRtResponse)
-                                } else {
-                                    httpStatus = 400
-                                    outputResponseText = "{\"error\": {\"message\": \"Local LiteRT-LM model weights for '$activeModelId' are not downloaded elements. Please download the weights first through the gateway application UI before choosing LiteRT-LM route.\", \"type\": \"model_not_found\", \"code\": 400}}"
-                                    sendJsonResponse(outputStream, 400, outputResponseText)
                                 }
-                            } else {
-                                httpStatus = 400
-                                outputResponseText = "{\"error\": {\"message\": \"Unsupported routing strategy or provider mismatch. Only Cloud Gemini API and local LiteRT-LM routes are supported.\", \"type\": \"unsupported_provider\", \"code\": 400}}"
-                                sendJsonResponse(outputStream, 400, outputResponseText)
+                                is RoutedModel.LiteRtLm -> {
+                                    val targetModelInfo = routed.info
+                                    val localReq = OpenAiToGeminiTranslator.extractLocalEngineRequest(rawBody)
+                                    val params = com.example.inference.LiteRtLmEngine.GenerationParams(
+                                        maxOutputTokens = localReq.maxTokens,
+                                        temperature = localReq.temperature,
+                                        topK = localReq.topK,
+                                        topP = localReq.topP
+                                    )
+
+                                    val loadErr = com.example.inference.LiteRtLmEngine.ensureLoadedAndReset(
+                                        context = context,
+                                        model = targetModelInfo,
+                                        params = params,
+                                        systemInstruction = localReq.systemInstruction,
+                                        history = localReq.history
+                                    )
+
+                                    if (loadErr != null) {
+                                        val (code, body) = OpenAiToGeminiTranslator.wrapLocalError(loadErr, requestModel)
+                                        httpStatus = code
+                                        outputResponseText = body
+                                        sendJsonResponse(outputStream, code, body)
+                                    } else {
+                                        when (val r = com.example.inference.LiteRtLmEngine.generate(localReq.latestUserText)) {
+                                            is com.example.inference.LiteRtLmEngine.Result.Ok -> {
+                                                val successResponse = OpenAiToGeminiTranslator.wrapLocalSuccess(r, requestModel)
+                                                outputResponseText = successResponse
+                                                sendJsonResponse(outputStream, 200, successResponse)
+                                            }
+                                            is com.example.inference.LiteRtLmEngine.Result.Err -> {
+                                                val (code, body) = OpenAiToGeminiTranslator.wrapLocalError(r, requestModel)
+                                                httpStatus = code
+                                                outputResponseText = body
+                                                sendJsonResponse(outputStream, code, body)
+                                            }
+                                        }
+                                    }
+                                }
+                                is RoutedModel.AiCore -> {
+                                    httpStatus = 501
+                                    outputResponseText = "{\"error\": {\"message\": \"AICore runtime is not implemented yet.\", \"type\": \"not_implemented\", \"code\": 501}}"
+                                    sendJsonResponse(outputStream, 501, outputResponseText)
+                                }
                             }
                         }
 
@@ -716,14 +719,14 @@ class ProxyServerManager(
     }
 
     private fun isEmulator(): Boolean {
-        val brand = android.os.Build.BRAND.lowercase(Locale.ROOT)
-        val device = android.os.Build.DEVICE.lowercase(Locale.ROOT)
-        val model = android.os.Build.MODEL.lowercase(Locale.ROOT)
-        val product = android.os.Build.PRODUCT.lowercase(Locale.ROOT)
-        val hardware = android.os.Build.HARDWARE.lowercase(Locale.ROOT)
-        val fingerprint = android.os.Build.FINGERPRINT.lowercase(Locale.ROOT)
-        val manufacturer = android.os.Build.MANUFACTURER.lowercase(Locale.ROOT)
-        val board = android.os.Build.BOARD.lowercase(Locale.ROOT)
+        val brand = (android.os.Build.BRAND ?: "").lowercase(Locale.ROOT)
+        val device = (android.os.Build.DEVICE ?: "").lowercase(Locale.ROOT)
+        val model = (android.os.Build.MODEL ?: "").lowercase(Locale.ROOT)
+        val product = (android.os.Build.PRODUCT ?: "").lowercase(Locale.ROOT)
+        val hardware = (android.os.Build.HARDWARE ?: "").lowercase(Locale.ROOT)
+        val fingerprint = (android.os.Build.FINGERPRINT ?: "").lowercase(Locale.ROOT)
+        val manufacturer = (android.os.Build.MANUFACTURER ?: "").lowercase(Locale.ROOT)
+        val board = (android.os.Build.BOARD ?: "").lowercase(Locale.ROOT)
         
         return brand.startsWith("generic") || 
                 (brand.contains("google") && device.startsWith("vsoc")) ||
@@ -756,53 +759,8 @@ class ProxyServerManager(
                 manufacturer.contains("google") && model.contains("sdk") ||
                 board.contains("cuttlefish") ||
                 board.contains("redroid") ||
-                android.os.Build.SUPPORTED_ABIS.any { it.contains("x86") || it.contains("x86_64") }
+                (android.os.Build.SUPPORTED_ABIS ?: emptyArray()).any { (it ?: "").contains("x86") || (it ?: "").contains("x86_64") }
     }
 }
 
-/**
- * Lazy class loader wrapper design pattern for native MediaPipe model engine execution.
- * Prevents unsatisfied linked library error of UnsatisfiedLinkError or other instantiation
- * exceptions/crashes from terminating the parent JVM on startup / network request phase or under emulators.
- */
-object NativeLlmRunner {
-    fun executeInference(context: Context, modelPath: String, prompt: String, rawBody: String): String {
-        val optionsBuilder = com.google.mediapipe.tasks.genai.llminference.LlmInference.LlmInferenceOptions.builder()
-            .setModelPath(modelPath)
-
-        try {
-            val reqObj = org.json.JSONObject(rawBody)
-            if (reqObj.has("temperature")) {
-                val temp = reqObj.getDouble("temperature").toFloat()
-                optionsBuilder.setTemperature(temp)
-            }
-            if (reqObj.has("max_tokens")) {
-                val maxTok = reqObj.getInt("max_tokens")
-                optionsBuilder.setMaxTokens(maxTok)
-            } else if (reqObj.has("max_completion_tokens")) {
-                val maxTok = reqObj.getInt("max_completion_tokens")
-                optionsBuilder.setMaxTokens(maxTok)
-            }
-            if (reqObj.has("top_k")) {
-                val tk = reqObj.getInt("top_k")
-                optionsBuilder.setTopK(tk)
-            }
-            if (reqObj.has("seed")) {
-                val seedVal = reqObj.getInt("seed")
-                optionsBuilder.setRandomSeed(seedVal)
-            }
-        } catch (optEx: Throwable) {
-            Log.w("NativeLlmRunner", "Optional generation parameters parsing skipped or unsupported", optEx)
-        }
-
-        val options = optionsBuilder.build()
-        val inference = com.google.mediapipe.tasks.genai.llminference.LlmInference.createFromOptions(context, options)
-        try {
-            return inference.generateResponse(prompt)
-        } finally {
-            try {
-                inference.close()
-            } catch (ignored: Throwable) {}
-        }
-    }
-}
+// NativeLlmRunner has been removed, replaced by first-class LiteRtLmEngine

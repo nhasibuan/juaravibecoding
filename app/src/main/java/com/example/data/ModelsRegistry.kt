@@ -18,7 +18,11 @@ data class LocalModelInfo(
     val llmSupportThinking: Boolean = false,
     val llmSupportImage: Boolean = false,
     val llmSupportAudio: Boolean = false,
-    val accelerators: String = "cpu,gpu"
+    val accelerators: String = "cpu,gpu",
+    val cloudUpstreamId: String? = null,
+    val openAiAliases: List<String> = emptyList(),
+    val experimental: Boolean = false,
+    val preferredBackend: String = "cpu"
 ) {
     val targetFilePath: String
         get() {
@@ -42,7 +46,6 @@ data class LocalModelInfo(
     fun getResolvedTargetFile(context: android.content.Context, forWriting: Boolean = false): java.io.File {
         if (runtimeType != "litert-lm") return java.io.File("system-managed")
         
-        // Fallback to our own app's files directory which is always accessible and writable
         val extDir = context.getExternalFilesDir(null)
         val subPath = when {
             modelId == "litert-community/gemma-4-E2B-it-litert-lm" -> "Gemma_4_E2B_it/20260325/gemma4_2b_v09_obfus_fix_all_modalities_thinking.litertlm"
@@ -59,20 +62,19 @@ data class LocalModelInfo(
             return localFile
         }
 
-        // If local downloaded file exists, prefer it
-        if (localFile.exists() && localFile.length() > 0) {
+        val existsOption = try { localFile.exists() && localFile.length() > 0 } catch (tf: Throwable) { false }
+        if (existsOption) {
             return localFile
         }
 
         val preferredPath = targetFilePath
         val preferredFile = java.io.File(preferredPath)
         try {
-            // Check if the preferred path is available and readable to the app
             if (preferredFile.exists() && preferredFile.canRead()) {
                 return preferredFile
             }
         } catch (e: Throwable) {
-            // SecurityException due to Scoped Storage on API 30+
+            // SecurityException
         }
 
         return localFile
@@ -80,15 +82,51 @@ data class LocalModelInfo(
 }
 
 object ModelsRegistry {
-    // Default LiteRT-LM Model Path on Android Storage:
-    // Resolves to: \Internal shared storage\Android\data\com.google.ai.edge.gallery\files\Gemma_4_E2B_it\20260325\gemma4_2b_v09_obfus_fix_all_modalities_thinking.litertlm
-    // on user devices (e.g., ADVAN SKETSA 3 via MTP USB connection).
     const val DEFAULT_LITERT_MODEL_PATH = "/sdcard/Android/data/com.google.ai.edge.gallery/files/Gemma_4_E2B_it/20260325/gemma4_2b_v09_obfus_fix_all_modalities_thinking.litertlm"
 
-    // Default configuration for the LiteRT-LM engine
     val defaultEngineConfig = EngineConfig(modelPath = DEFAULT_LITERT_MODEL_PATH)
 
     val allowedModels = listOf(
+        // Promoting Cloud Models to standard registry entries first
+        LocalModelInfo(
+            name = "Gemini 2.5 Flash",
+            modelId = "gemini-2.5-flash",
+            modelFile = "system-managed",
+            runtimeType = "cloud",
+            cloudUpstreamId = "gemini-2.5-flash",
+            openAiAliases = listOf("gpt-4o-mini", "gpt-3.5-turbo"),
+            description = "Google Gemini 2.5 Flash model hosted on Google Cloud API, recommended for swift cloud-based text and code generation.",
+            accelerators = "cloud"
+        ),
+        LocalModelInfo(
+            name = "Gemini 2.5 Pro",
+            modelId = "gemini-2.5-pro",
+            modelFile = "system-managed",
+            runtimeType = "cloud",
+            cloudUpstreamId = "gemini-2.5-pro",
+            description = "Google Gemini 2.5 Pro model hosted on Google Cloud API, recommended for hyper-complex analytical and multi-step reasoning tasks.",
+            accelerators = "cloud"
+        ),
+        LocalModelInfo(
+            name = "Gemini 1.5 Flash",
+            modelId = "gemini-1.5-flash",
+            modelFile = "system-managed",
+            runtimeType = "cloud",
+            cloudUpstreamId = "gemini-1.5-flash",
+            description = "Google Gemini 1.5 Flash model hosted on Google Cloud API.",
+            accelerators = "cloud"
+        ),
+        LocalModelInfo(
+            name = "Gemini 1.5 Pro",
+            modelId = "gemini-1.5-pro",
+            modelFile = "system-managed",
+            runtimeType = "cloud",
+            cloudUpstreamId = "gemini-1.5-pro",
+            description = "Google Gemini 1.5 Pro model hosted on Google Cloud API.",
+            accelerators = "cloud"
+        ),
+
+        // AICore Models
         LocalModelInfo(
             name = "Gemma 4 E2B (Gemini Nano via AICore)",
             modelId = "aicore-gemma-4-e2b",
@@ -101,6 +139,19 @@ object ModelsRegistry {
             accelerators = "npu"
         ),
         LocalModelInfo(
+            name = "Gemma 4 E4B (Gemini Nano via AICore)",
+            modelId = "aicore-gemma-4-e4b",
+            modelFile = "system-managed",
+            runtimeType = "aicore",
+            description = "Gemini Nano available using Android AICore, optimized for your device. The recommended path for production applications.",
+            sizeInBytes = 0,
+            minDeviceMemoryInGb = 6,
+            llmSupportImage = true,
+            accelerators = "npu"
+        ),
+
+        // LiteRT-LM Local Models
+        LocalModelInfo(
             name = "Gemma-4-E2B-it",
             modelId = "litert-community/gemma-4-E2B-it-litert-lm",
             modelFile = "gemma4_2b_v09_obfus_fix_all_modalities_thinking.litertlm",
@@ -112,18 +163,8 @@ object ModelsRegistry {
             llmSupportThinking = true,
             llmSupportImage = true,
             llmSupportAudio = true,
-            accelerators = "gpu,cpu"
-        ),
-        LocalModelInfo(
-            name = "Gemma 4 E4B (Gemini Nano via AICore)",
-            modelId = "aicore-gemma-4-e4b",
-            modelFile = "system-managed",
-            runtimeType = "aicore",
-            description = "Gemini Nano available using Android AICore, optimized for your device. The recommended path for production applications.",
-            sizeInBytes = 0,
-            minDeviceMemoryInGb = 6,
-            llmSupportImage = true,
-            accelerators = "npu"
+            accelerators = "gpu,cpu",
+            preferredBackend = "gpu"
         ),
         LocalModelInfo(
             name = "Gemma-4-E4B-it",
@@ -137,7 +178,8 @@ object ModelsRegistry {
             llmSupportThinking = true,
             llmSupportImage = true,
             llmSupportAudio = true,
-            accelerators = "gpu,cpu"
+            accelerators = "gpu,cpu",
+            preferredBackend = "gpu"
         ),
         LocalModelInfo(
             name = "Gemma-3n-E2B-it",
@@ -223,7 +265,16 @@ object ModelsRegistry {
         )
     )
 
+    fun findStrict(id: String): LocalModelInfo? {
+        val lowerId = id.trim().lowercase()
+        return allowedModels.firstOrNull { 
+            it.modelId.lowercase() == lowerId || 
+            it.openAiAliases.any { alias -> alias.lowercase() == lowerId }
+        }
+    }
+
+    @Deprecated("Use findStrict instead", ReplaceWith("findStrict(id)"))
     fun getModelById(id: String): LocalModelInfo {
-        return allowedModels.firstOrNull { it.modelId == id } ?: allowedModels[1]
+        return findStrict(id) ?: allowedModels[4] // falls back to standard allowed gemma-4 local
     }
 }
