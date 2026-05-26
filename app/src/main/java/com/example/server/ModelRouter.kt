@@ -2,7 +2,6 @@ package com.example.server
 
 import com.example.data.LocalModelInfo
 import com.example.data.ModelsRegistry
-import com.example.data.ProxySetting
 import com.example.data.RuntimeType
 
 /**
@@ -21,6 +20,12 @@ sealed class RoutedModel {
  * Closed set of routing failures, each with a documented HTTP status and
  * OpenAI-shaped `error.type`. Centralizing these lets [HttpErrors.jsonError]
  * render a uniform wire shape regardless of where the failure originated.
+ *
+ * As of plan.md §11 PR #8, [ProviderMismatch] is gone: the gateway no longer
+ * has a global "current provider" that gates which models are dispatchable.
+ * Each registered model decides its own runtime via its [RuntimeType], and
+ * any registered id is reachable so long as its prerequisite resource (cloud
+ * key or on-disk weights) is present.
  */
 sealed class RoutingError(
     val httpStatus: Int,
@@ -32,23 +37,6 @@ sealed class RoutingError(
         httpStatus = 400,
         type = "model_not_found",
         message = "Unknown model id: '$id'. Call GET /v1/models to list available ids."
-    )
-
-    /**
-     * The id maps to a known model whose [RuntimeType] disagrees with the
-     * configured `targetProvider`. e.g. asking for `gemini-2.5-flash` while
-     * the gateway is set to LOCAL_VAL.
-     */
-    class ProviderMismatch(
-        id: String,
-        modelRuntime: RuntimeType,
-        configuredProvider: String
-    ) : RoutingError(
-        httpStatus = 400,
-        type = "provider_mismatch",
-        message = "Model '$id' has runtime ${modelRuntime.name} but the gateway is " +
-                "configured as '$configuredProvider'. Either switch the gateway to " +
-                "the matching provider or pick a compatible model."
     )
 
     /**
@@ -83,6 +71,12 @@ sealed class RoutingError(
 /**
  * Pure routing logic. No Android imports, no I/O, fully unit-testable.
  *
+ * Per-model provider selection (plan.md §11 PR #8): the router no longer
+ * consults a global `targetProvider`. The runtime to dispatch to is
+ * determined entirely by the resolved [LocalModelInfo.runtimeType], so a
+ * single gateway can serve cloud Gemini and on-device LiteRT-LM requests
+ * concurrently — pick which by passing the corresponding `model` id.
+ *
  * The dispatch site supplies two callbacks instead of doing the I/O directly:
  *  - [weightsAvailable] decides whether a LiteRT-LM model's `.litertlm` file
  *    exists on disk for the current Context.
@@ -94,16 +88,22 @@ sealed class RoutingError(
 object ModelRouter {
 
     /**
-     * Resolve a request's `model` field to a concrete [RoutedModel] under
-     * the current settings. Returns either:
+     * Resolve a request's `model` field to a concrete [RoutedModel].
+     * Returns either:
      *  - `Result.success(RoutedModel)` — caller dispatches directly.
      *  - `Result.failure(re)` where `re` is a [RoutingErrorException] wrapping
      *    a [RoutingError]. The dispatch site renders it via
      *    [HttpErrors.jsonError] and writes the matching HTTP status.
+     *
+     * Failure modes (closed set):
+     *  - [RoutingError.UnknownModel]     — id not in registry
+     *  - [RoutingError.CloudKeyMissing]  — CLOUD model + no Gemini key
+     *  - [RoutingError.WeightsMissing]   — LITERT_LM model + no on-disk file
+     *  - [RoutingError.AiCoreUnsupported] — AICORE model (always, until PR #10
+     *    lands a real engine)
      */
     fun resolve(
         requestedId: String,
-        settings: ProxySetting,
         weightsAvailable: (LocalModelInfo) -> Boolean,
         hasCloudKey: () -> Boolean
     ): Result<RoutedModel> {
@@ -112,15 +112,7 @@ object ModelRouter {
 
         return when (info.runtimeType) {
             RuntimeType.CLOUD -> {
-                if (settings.targetProvider != PROVIDER_CLOUD) {
-                    Result.failure(
-                        RoutingErrorException(
-                            RoutingError.ProviderMismatch(
-                                info.modelId, info.runtimeType, settings.targetProvider
-                            )
-                        )
-                    )
-                } else if (!hasCloudKey()) {
+                if (!hasCloudKey()) {
                     Result.failure(
                         RoutingErrorException(RoutingError.CloudKeyMissing(info.modelId))
                     )
@@ -130,15 +122,7 @@ object ModelRouter {
             }
 
             RuntimeType.LITERT_LM -> {
-                if (settings.targetProvider != PROVIDER_LOCAL) {
-                    Result.failure(
-                        RoutingErrorException(
-                            RoutingError.ProviderMismatch(
-                                info.modelId, info.runtimeType, settings.targetProvider
-                            )
-                        )
-                    )
-                } else if (!weightsAvailable(info)) {
+                if (!weightsAvailable(info)) {
                     Result.failure(
                         RoutingErrorException(
                             RoutingError.WeightsMissing(info.modelId, info.targetFilePath)
@@ -154,10 +138,6 @@ object ModelRouter {
             )
         }
     }
-
-    /** Magic strings kept in one place so callers don't sprinkle literals. */
-    const val PROVIDER_CLOUD = "CLOUD_GEMINI"
-    const val PROVIDER_LOCAL = "LOCAL_VAL"
 }
 
 /**
