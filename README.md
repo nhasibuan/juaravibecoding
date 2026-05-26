@@ -145,7 +145,7 @@ To prevent data wipes from destructive reconstructions (`fallbackToDestructiveMi
 ---
 
 ### 2.3 Detailed File-by-File Source Mapping
-The complete codebase is mapped systematically below across all 21 core components, explaining their functional responsibilities, upstream calling actors, and interacting downstream dependencies:
+The complete codebase is mapped systematically below across all 22 core components, explaining their functional responsibilities, upstream calling actors, and interacting downstream dependencies:
 
 #### 1. `app/src/main/AndroidManifest.xml`
 *   **Responsibility & Capabilities:** Defines the application’s operating parameters to the Android OS. It declares the application ID, service scopes, UI launchers, and grants network and background privileges (`android.permission.INTERNET`, `android.permission.ACCESS_NETWORK_STATE`).
@@ -238,7 +238,7 @@ The complete codebase is mapped systematically below across all 21 core componen
 *   **Uses/Interactivity:** Uses `org.json` to parse structures, extracts system metadata, and formats Server-Sent Events (SSE) chunks.
 
 #### 19. `app/src/main/java/com/example/server/ProxyServerManager.kt`
-*   **Responsibility & Capabilities:** Sockets driver managing background server thread cycles. It starts TCP socket services, handles client connection pools, validates custom authorization tokens, routes requests through appropriate engines, and generates HTTP response wrappers or Server-Sent Events (SSE) loops.
+*   **Responsibility & Capabilities:** Sockets driver managing background server thread cycles. It starts TCP socket services, handles client connection pools, validates custom authorization tokens, performs robust downstream JSON body syntax validation (reclaiming control and rejecting malformed inputs to ensure compliance), routes requests through appropriate engines, and generates HTTP response wrappers or Server-Sent Events (SSE) loops.
 *   **Used By:** `com.example.ui.GatewayViewModel`.
 *   **Uses/Interactivity:** Evaluates `ModelRouter`, logs metrics through `GatewayRepository`, formats data via translation blocks, and connects LiteRT or OkHttp REST backends.
 
@@ -251,6 +251,11 @@ The complete codebase is mapped systematically below across all 21 core componen
 *   **Responsibility & Capabilities:** Implements UI verification pipelines using Roborazzi. Validates core UI layouts to catch unintended visual changes.
 *   **Used By:** Roborazzi verification pipelines.
 *   **Uses/Interactivity:** Exercises target interface components under simulation profiles to capture layout representations.
+
+#### 22. `app/src/test/java/com/example/server/ProxyServerManagerTest.kt`
+*   **Responsibility & Capabilities:** Highly robust functional unit test executing under Robolectric. Validates local server socket communication, JSON validation logic, and proper rejection of syntactically broken inputs with HTTP 400 Bad Request error.
+*   **Used By:** Gradle test runner, CI verification pipelines.
+*   **Uses/Interactivity:** Connects loopback sockets to target server instances to verify parsing compliance.
 
 ---
 

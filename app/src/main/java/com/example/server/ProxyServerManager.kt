@@ -490,8 +490,15 @@ class ProxyServerManager(
 
                         // Parse requested model out of the payload
                         var isStream = false
+                        var isJsonValid = true
+                        var jsonParseExceptionMessage = ""
                         try {
-                            if (rawBody.trim().isNotEmpty()) {
+                            if (rawBody.trim().isEmpty()) {
+                                if (isChatEndpoint) {
+                                    isJsonValid = false
+                                    jsonParseExceptionMessage = "Empty request body"
+                                }
+                            } else {
                                 val jsonObj = JSONObject(rawBody)
                                 requestModel = jsonObj.optString("model", "unknown-model")
                                 isStream = jsonObj.optBoolean("stream", false)
@@ -506,8 +513,44 @@ class ProxyServerManager(
                                     }
                                 }
                             }
+                        } catch (e: org.json.JSONException) {
+                            Log.e("ProxyServerManager", "JSON Schema parsing failure", e)
+                            if (isChatEndpoint) {
+                                isJsonValid = false
+                                jsonParseExceptionMessage = "Invalid JSON syntax: ${e.localizedMessage}"
+                            }
                         } catch (e: Exception) {
                             Log.e("ProxyServerManager", "Failed to parse requested input JSON model ID", e)
+                        }
+
+                        if (!isJsonValid) {
+                            httpStatus = 400
+                            val errObj = JSONObject()
+                                .put("message", jsonParseExceptionMessage)
+                                .put("type", "invalid_request_error")
+                                .put("param", JSONObject.NULL)
+                                .put("code", 400)
+                            outputResponseText = JSONObject().put("error", errObj).toString()
+                            sendJsonResponse(outputStream, 400, outputResponseText)
+
+                            val duration = System.currentTimeMillis() - startTime
+                            try {
+                                repository.insertLog(
+                                    GatewayLog(
+                                        method = method,
+                                        path = path,
+                                        requestModel = "Invalid JSON",
+                                        clientIp = clientIp,
+                                        status = 400,
+                                        durationMs = duration,
+                                        responsePreview = "Rejected: $jsonParseExceptionMessage",
+                                        isAuthorized = authorized
+                                    )
+                                )
+                            } catch (dbEx: Exception) {
+                                Log.e("ProxyServerManager", "DB logging failed for bad JSON", dbEx)
+                            }
+                            return@withContext
                         }
 
                         if (toolRejectedMessage.isNotEmpty()) {
