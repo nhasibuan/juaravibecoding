@@ -11,5 +11,6 @@ data class ProxySetting(
     val activeModelId: String = "litert-community/gemma-4-E2B-it-litert-lm",
     val targetProvider: String = "CLOUD_GEMINI", // "CLOUD_GEMINI", "LOCAL_VAL"
     val geminiApiKey: String = "",
-    val bypassGpu: Boolean = false
+    val bypassGpu: Boolean = false,
+    val enableNpuBackend: Boolean = false
 )

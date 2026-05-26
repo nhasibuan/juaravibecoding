@@ -36,6 +36,7 @@ import com.example.data.GatewayLog
 import com.example.data.LocalModelInfo
 import com.example.data.ModelsRegistry
 import com.example.data.ProxySetting
+import com.example.data.RuntimeType
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -64,6 +65,7 @@ fun GatewayScreen(
     var geminiApiKeyValue by remember { mutableStateOf("") }
     var showGeminiApiKey by remember { mutableStateOf(false) }
     var bypassGpuValue by remember { mutableStateOf(false) }
+    var enableNpuBackendValue by remember { mutableStateOf(false) }
 
     // Sync input states when configuration loads up from DB
     LaunchedEffect(settings) {
@@ -72,6 +74,7 @@ fun GatewayScreen(
             apiKeyValue = it.proxyApiKey
             geminiApiKeyValue = it.geminiApiKey
             bypassGpuValue = it.bypassGpu
+            enableNpuBackendValue = it.enableNpuBackend
         }
     }
 
@@ -479,6 +482,45 @@ fun GatewayScreen(
                             )
                         }
 
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        // NPU Opt-In switch
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(Color.Black.copy(alpha = 0.2f))
+                                .padding(12.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Opt-In to LiteRT NPU Acceleration",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White
+                                )
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(
+                                    text = "Attempts on-device SoC NPU execution. May fail cleanly if NPU drivers/plug-ins are not installed on the device.",
+                                    fontSize = 10.sp,
+                                    color = Color.LightGray.copy(alpha = 0.8f)
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Switch(
+                                checked = enableNpuBackendValue,
+                                onCheckedChange = { enableNpuBackendValue = it },
+                                colors = SwitchDefaults.colors(
+                                    checkedThumbColor = Color.Black,
+                                    checkedTrackColor = accentCyan,
+                                    uncheckedThumbColor = Color.LightGray,
+                                    uncheckedTrackColor = Color.DarkGray
+                                )
+                            )
+                        }
+
                         Spacer(modifier = Modifier.height(16.dp))
 
                         Button(
@@ -489,7 +531,8 @@ fun GatewayScreen(
                                     activeModelId = settings?.activeModelId ?: "litert-community/gemma-4-E2B-it-litert-lm",
                                     provider = settings?.targetProvider ?: "CLOUD_GEMINI",
                                     geminiApiKeyText = geminiApiKeyValue,
-                                    bypassGpu = bypassGpuValue
+                                    bypassGpu = bypassGpuValue,
+                                    enableNpuBackend = enableNpuBackendValue
                                 )
                                 Toast.makeText(context, "Proxy parameters updated!", Toast.LENGTH_SHORT).show()
                             },
@@ -523,10 +566,9 @@ fun GatewayScreen(
                         val isSelected = model.modelId == activeModelId
                         val targetProvider = settings?.targetProvider ?: "CLOUD_GEMINI"
                         val isCompatible = when (model.runtimeType) {
-                            "cloud" -> targetProvider == "CLOUD_GEMINI"
-                            "litert-lm" -> targetProvider == "LOCAL_VAL"
-                            "aicore" -> targetProvider == "LOCAL_VAL"
-                            else -> false
+                            RuntimeType.CLOUD -> targetProvider == "CLOUD_GEMINI"
+                            RuntimeType.LITERT_LM -> targetProvider == "LOCAL_VAL"
+                            RuntimeType.AICORE -> targetProvider == "LOCAL_VAL"
                         }
 
                         Card(
@@ -653,10 +695,10 @@ fun GatewayScreen(
 
                                     // Execution platform
                                     Badge(
-                                        containerColor = if (model.runtimeType == "aicore") Color(0xFF3B82F6) else Color(0xFFF59E0B),
+                                        containerColor = if (model.runtimeType == RuntimeType.AICORE) Color(0xFF3B82F6) else Color(0xFFF59E0B),
                                         contentColor = Color.White
                                     ) {
-                                        Text(model.runtimeType.uppercase(), fontSize = 8.sp, modifier = Modifier.padding(2.dp))
+                                        Text(model.runtimeType.name, fontSize = 8.sp, modifier = Modifier.padding(2.dp))
                                     }
 
                                     if (model.llmSupportThinking) {
@@ -677,7 +719,7 @@ fun GatewayScreen(
                                         }
                                     }
                                 }
-                                if (model.runtimeType == "litert-lm") {
+                                if (model.runtimeType == RuntimeType.LITERT_LM) {
                                     val localFile = remember(model.modelId, downloadStatus[model.modelId]) { model.getResolvedTargetFile(context) }
                                     val resolvedPath = remember(localFile) { localFile.absolutePath }
                                     val isDownloaded = remember(localFile) {

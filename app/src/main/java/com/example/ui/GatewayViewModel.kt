@@ -121,7 +121,7 @@ class GatewayViewModel(
         }
     }
 
-    fun applySettings(portText: String, apiKeyText: String, activeModelId: String, provider: String, geminiApiKeyText: String, bypassGpu: Boolean) {
+    fun applySettings(portText: String, apiKeyText: String, activeModelId: String, provider: String, geminiApiKeyText: String, bypassGpu: Boolean, enableNpuBackend: Boolean) {
         viewModelScope.launch {
             try {
                 val validatedPort = portText.toIntOrNull() ?: 8080
@@ -136,7 +136,8 @@ class GatewayViewModel(
                         activeModelId = activeModelId,
                         targetProvider = provider,
                         geminiApiKey = geminiApiKeyText.trim(),
-                        bypassGpu = bypassGpu
+                        bypassGpu = bypassGpu,
+                        enableNpuBackend = enableNpuBackend
                     )
                     repository.updateSettings(updated)
 

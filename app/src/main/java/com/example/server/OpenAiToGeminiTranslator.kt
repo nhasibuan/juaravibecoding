@@ -278,6 +278,8 @@ object OpenAiToGeminiTranslator {
             .put("completion_tokens", if (compEst > 0) compEst else 1)
             .put("total_tokens", promptEst + compEst)
 
+        val cacheStatus = if (res.kvCacheReused) "cache=hit" else "cache=miss"
+
         val out = JSONObject()
             .put("id", chatCmplId)
             .put("object", "chat.completion")
@@ -285,7 +287,7 @@ object OpenAiToGeminiTranslator {
             .put("model", openAiModel)
             .put("choices", choicesArr)
             .put("usage", usageObj)
-            .put("system_fingerprint", "litertlm:${res.backendUsed}:${res.latencyMs}ms")
+            .put("system_fingerprint", "litertlm:${res.backendUsed}:${res.latencyMs}ms:$cacheStatus")
 
         return out.toString()
     }
@@ -308,5 +310,91 @@ object OpenAiToGeminiTranslator {
 
         val root = JSONObject().put("error", errObj)
         return Pair(httpCode, root.toString())
+    }
+
+    fun streamingFirstDelta(
+        chatCmplId: String,
+        openAiModel: String,
+        backendUsed: String,
+        latencyMs: Long,
+        kvCacheReused: Boolean
+    ): String {
+        val cacheStatus = if (kvCacheReused) "cache=hit" else "cache=miss"
+        val delta = JSONObject().put("role", "assistant").put("content", "")
+        val choice = JSONObject().put("index", 0).put("delta", delta).put("finish_reason", JSONObject.NULL)
+        val choices = JSONArray().put(choice)
+        return JSONObject()
+            .put("id", chatCmplId)
+            .put("object", "chat.completion.chunk")
+            .put("created", System.currentTimeMillis() / 1000)
+            .put("model", openAiModel)
+            .put("choices", choices)
+            .put("system_fingerprint", "litertlm:$backendUsed:${latencyMs}ms:$cacheStatus")
+            .toString()
+    }
+
+    fun streamingContentDelta(
+        chatCmplId: String,
+        openAiModel: String,
+        deltaText: String,
+        backendUsed: String,
+        latencyMs: Long,
+        kvCacheReused: Boolean
+    ): String {
+        val cacheStatus = if (kvCacheReused) "cache=hit" else "cache=miss"
+        val delta = JSONObject().put("content", deltaText)
+        val choice = JSONObject().put("index", 0).put("delta", delta).put("finish_reason", JSONObject.NULL)
+        val choices = JSONArray().put(choice)
+        return JSONObject()
+            .put("id", chatCmplId)
+            .put("object", "chat.completion.chunk")
+            .put("created", System.currentTimeMillis() / 1000)
+            .put("model", openAiModel)
+            .put("choices", choices)
+            .put("system_fingerprint", "litertlm:$backendUsed:${latencyMs}ms:$cacheStatus")
+            .toString()
+    }
+
+    fun streamingFinish(
+        chatCmplId: String,
+        openAiModel: String,
+        backendUsed: String,
+        latencyMs: Long,
+        kvCacheReused: Boolean
+    ): String {
+        val cacheStatus = if (kvCacheReused) "cache=hit" else "cache=miss"
+        val delta = JSONObject()
+        val choice = JSONObject().put("index", 0).put("delta", delta).put("finish_reason", "stop")
+        val choices = JSONArray().put(choice)
+        return JSONObject()
+            .put("id", chatCmplId)
+            .put("object", "chat.completion.chunk")
+            .put("created", System.currentTimeMillis() / 1000)
+            .put("model", openAiModel)
+            .put("choices", choices)
+            .put("system_fingerprint", "litertlm:$backendUsed:${latencyMs}ms:$cacheStatus")
+            .toString()
+    }
+
+    fun streamingError(
+        chatCmplId: String,
+        openAiModel: String,
+        errorMsg: String,
+        backendUsed: String,
+        latencyMs: Long,
+        kvCacheReused: Boolean
+    ): String {
+        val cacheStatus = if (kvCacheReused) "cache=hit" else "cache=miss"
+        val delta = JSONObject().put("content", "[ERROR: $errorMsg]")
+        val choice = JSONObject().put("index", 0).put("delta", delta).put("finish_reason", "error")
+        val choices = JSONArray().put(choice)
+        return JSONObject()
+            .put("id", chatCmplId)
+            .put("object", "chat.completion.chunk")
+            .put("created", System.currentTimeMillis() / 1000)
+            .put("model", openAiModel)
+            .put("choices", choices)
+            .put("system_fingerprint", "litertlm:$backendUsed:${latencyMs}ms:$cacheStatus")
+            .toString()
     }
 }

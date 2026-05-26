@@ -3,6 +3,7 @@ package com.example.server
 import com.example.data.LocalModelInfo
 import com.example.data.ModelsRegistry
 import com.example.data.ProxySetting
+import com.example.data.RuntimeType
 
 sealed class RoutedModel {
     data class Cloud(val info: LocalModelInfo) : RoutedModel()
@@ -32,7 +33,7 @@ object ModelRouter {
         val targetProvider = settings.targetProvider
         
         when (model.runtimeType) {
-            "cloud" -> {
+            RuntimeType.CLOUD -> {
                 if (targetProvider != "CLOUD_GEMINI") {
                     return Result.failure(RoutingError.ProviderMismatch(model.modelId, "CLOUD_GEMINI", targetProvider))
                 }
@@ -41,7 +42,7 @@ object ModelRouter {
                 }
                 return Result.success(RoutedModel.Cloud(model))
             }
-            "litert-lm" -> {
+            RuntimeType.LITERT_LM -> {
                 if (targetProvider != "LOCAL_VAL") {
                     return Result.failure(RoutingError.ProviderMismatch(model.modelId, "LOCAL_VAL", targetProvider))
                 }
@@ -51,14 +52,11 @@ object ModelRouter {
                 }
                 return Result.success(RoutedModel.LiteRtLm(model))
             }
-            "aicore" -> {
+            RuntimeType.AICORE -> {
                 if (targetProvider != "LOCAL_VAL") {
                     return Result.failure(RoutingError.ProviderMismatch(model.modelId, "LOCAL_VAL", targetProvider))
                 }
                 return Result.failure(RoutingError.AiCoreUnsupported(model.modelId))
-            }
-            else -> {
-                return Result.failure(RoutingError.UnknownModel(requestedId))
             }
         }
     }
