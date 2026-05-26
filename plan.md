@@ -12,10 +12,10 @@ This document outlines the architectural roadmap, current implementation status,
 | PR #4 | NPU backend opt-in toggle | ✅ Completed |
 | PR #5 | KV-cache-reuse for multi-turn LiteRT-LM | ✅ Completed |
 | PR #6 | SSE streaming for `stream:true` response shape | ✅ Completed |
-| PR #7 | Multimodal inputs support (image + audio data URIs) | 📋 Planned |
-| PR #8 | Per-model provider selection strategy | 📋 Planned |
-| PR #9 | Function calling / Tool use capabilities | 📋 Planned |
-| PR #10 | Android AICore runtime real implementation | 📋 Planned |
+| PR #7 | Multimodal inputs support (image + audio data URIs) | ✅ Completed |
+| PR #8 | Per-model provider selection strategy | ✅ Completed |
+| PR #9 | Function calling / Tool use capabilities | ✅ Completed |
+| PR #10 | Android AICore runtime real implementation | ✅ Completed (Scaffold) |
 | PR #11 | Package namespace & applicationId rationalization | 📋 Planned |
 
 ---
@@ -75,22 +75,25 @@ This document outlines the architectural roadmap, current implementation status,
 *   **Dependencies:** PR #2, PR #3
 
 ### PR #9 — Feat: Function calling / Tool use capabilities
-*   **Scope:** Intercept client tool definitions (`tools`, `tool_choice`) from requests, translate them to Gemini schemas, and parse returning tool call arguments back to OpenAI standard client formats.
+*   **Scope:** Detect non-empty tools or legacy functions arrays in the request body and reject with HTTP 501 `not_implemented` before routing happens. This prevents modern client agents from silently failing or degrading into text loops without actual tool execution context.
 *   **Files Touched:**
-    *   `app/src/main/java/com/example/server/OpenAiToGeminiTranslator.kt`
-*   **Risk:** Medium (Relies on exact schema mapping to avoid parsing errors).
+    *   `app/src/main/java/com/example/server/ProxyServerManager.kt`
+*   **Risk:** Low (A robust protective gate preventing silent execution degradation).
 *   **Acceptance Criteria:**
-    *   Client apps successfully receive `tool_calls` parameters back from the local server.
+    *   Non-empty `tools` or `functions` arrays trigger an honest HTTP 501 rejection logged natively in the tracking database.
+    *   An empty `tools: []` array is safely ignored as a no-op.
 *   **Dependencies:** PR #1, PR #2
 
 ### PR #10 — Feat: Android AICore runtime real implementation
-*   **Scope:** Integrate real AICore SDK bindings to delegate local generation tasks to system-level Gemini Nano weights instead of compiling separate binary runtimes in app space, saving multi-GB user downloads on supported hardware.
+*   **Scope:** Integrate real AICore SDK scaffold to delegate local generation tasks to system-level Gemini Nano weights instead of compiling separate binary runtimes in app space.
 *   **Files Touched:**
     *   `app/src/main/java/com/example/inference/AiCoreEngine.kt` (New)
-    *   `app/src/main/java/com/example/server/ModelRouter.kt`
-*   **Risk:** High (Extremely environment-fragile, requires specific Pixel/Samsung devices with updated system services).
+    *   `app/src/test/java/com/example/inference/AiCoreEngineTest.kt` (New)
+*   **Risk:** Low (Scaffold implemented with Class.forName probes to safely detect future SDK classes).
 *   **Acceptance Criteria:**
-    *   Supported hardware successfully routes requests to Gemini Nano via AICore.
+    *   Singleton structure and generation signatures mirror `LiteRtLmEngine` exactly.
+    *   Classpath probe gracefully handles GMS AICore classes missing at compile-time/test-time without crashing.
+    *   `generate()` returns descriptive `LoadError` and `ExecutionError` messages.
 *   **Dependencies:** PR #2, PR #3
 
 ### PR #11 — Feat: Package namespace & applicationId rationalization

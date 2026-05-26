@@ -1,7 +1,5 @@
 package com.example.server
 
-import com.example.data.LocalModelInfo
-import com.example.data.ProxySetting
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -9,10 +7,8 @@ class ModelRouterTest {
 
     @Test
     fun testResolveCloudModelSuccess() {
-        val settings = ProxySetting(targetProvider = "CLOUD_GEMINI")
         val result = ModelRouter.resolve(
             requestedId = "gemini-2.5-flash",
-            settings = settings,
             weightsAvailable = { false },
             hasCloudKey = { true }
         )
@@ -24,10 +20,8 @@ class ModelRouterTest {
 
     @Test
     fun testResolveCloudModelMissingKey() {
-        val settings = ProxySetting(targetProvider = "CLOUD_GEMINI")
         val result = ModelRouter.resolve(
             requestedId = "gemini-2.5-flash",
-            settings = settings,
             weightsAvailable = { false },
             hasCloudKey = { false }
         )
@@ -37,25 +31,9 @@ class ModelRouterTest {
     }
 
     @Test
-    fun testResolveCloudModelProviderMismatch() {
-        val settings = ProxySetting(targetProvider = "LOCAL_VAL")
-        val result = ModelRouter.resolve(
-            requestedId = "gemini-2.5-flash",
-            settings = settings,
-            weightsAvailable = { false },
-            hasCloudKey = { true }
-        )
-        assertTrue(result.isFailure)
-        val exception = result.exceptionOrNull()
-        assertTrue(exception is RoutingError.ProviderMismatch)
-    }
-
-    @Test
     fun testResolveLiteRtLmSuccess() {
-        val settings = ProxySetting(targetProvider = "LOCAL_VAL")
         val result = ModelRouter.resolve(
             requestedId = "litert-community/gemma-4-E2B-it-litert-lm",
-            settings = settings,
             weightsAvailable = { true },
             hasCloudKey = { false }
         )
@@ -67,10 +45,8 @@ class ModelRouterTest {
 
     @Test
     fun testResolveLiteRtLmMissingWeights() {
-        val settings = ProxySetting(targetProvider = "LOCAL_VAL")
         val result = ModelRouter.resolve(
             requestedId = "litert-community/gemma-4-E2B-it-litert-lm",
-            settings = settings,
             weightsAvailable = { false },
             hasCloudKey = { false }
         )
@@ -81,15 +57,34 @@ class ModelRouterTest {
 
     @Test
     fun testUnknownModel() {
-        val settings = ProxySetting()
         val result = ModelRouter.resolve(
             requestedId = "some-unknown-model",
-            settings = settings,
             weightsAvailable = { true },
             hasCloudKey = { true }
         )
         assertTrue(result.isFailure)
         val exception = result.exceptionOrNull()
         assertTrue(exception is RoutingError.UnknownModel)
+    }
+
+    @Test
+    fun testBothCloudAndLiteRtResolveInSameSession() {
+        // Resolve a cloud model first
+        val cloudResult = ModelRouter.resolve(
+            requestedId = "gemini-2.5-flash",
+            weightsAvailable = { true },
+            hasCloudKey = { true }
+        )
+        assertTrue(cloudResult.isSuccess)
+        assertTrue(cloudResult.getOrNull() is RoutedModel.Cloud)
+
+        // Resolve a local model back-to-back in the same session without provider switches
+        val localResult = ModelRouter.resolve(
+            requestedId = "litert-community/gemma-4-E2B-it-litert-lm",
+            weightsAvailable = { true },
+            hasCloudKey = { true }
+        )
+        assertTrue(localResult.isSuccess)
+        assertTrue(localResult.getOrNull() is RoutedModel.LiteRtLm)
     }
 }

@@ -2,7 +2,6 @@ package com.example.server
 
 import com.example.data.LocalModelInfo
 import com.example.data.ModelsRegistry
-import com.example.data.ProxySetting
 import com.example.data.RuntimeType
 
 sealed class RoutedModel {
@@ -14,7 +13,6 @@ sealed class RoutedModel {
 sealed class RoutingError(val httpStatus: Int, val type: String, val msg: String) : Exception(msg) {
     class UnknownModel(id: String) : RoutingError(400, "model_not_found", "Unknown model ID: '$id'.")
     class ModelDisabled(id: String, reason: String) : RoutingError(400, "model_disabled", "Model '$id' is disabled. Reason: $reason")
-    class ProviderMismatch(id: String, requested: String, configured: String) : RoutingError(400, "provider_mismatch", "Requested model '$id' requires provider '$requested' but gateway is configured for '$configured'.")
     class WeightsMissing(id: String, path: String) : RoutingError(400, "model_not_found", "Local weights for '$id' are missing at: $path. Please download them first through the gateway UI.")
     class CloudKeyMissing(id: String) : RoutingError(500, "gateway_setup_error", "Requested cloud model '$id' but GEMINI_API_KEY is not configured in the gateway.")
     class AiCoreUnsupported(id: String) : RoutingError(501, "not_implemented", "Android AICore support for '$id' is currently not implemented.")
@@ -23,29 +21,20 @@ sealed class RoutingError(val httpStatus: Int, val type: String, val msg: String
 object ModelRouter {
     fun resolve(
         requestedId: String,
-        settings: ProxySetting,
         weightsAvailable: (LocalModelInfo) -> Boolean,
         hasCloudKey: () -> Boolean
     ): Result<RoutedModel> {
         val model = ModelsRegistry.findStrict(requestedId)
             ?: return Result.failure(RoutingError.UnknownModel(requestedId))
 
-        val targetProvider = settings.targetProvider
-        
         when (model.runtimeType) {
             RuntimeType.CLOUD -> {
-                if (targetProvider != "CLOUD_GEMINI") {
-                    return Result.failure(RoutingError.ProviderMismatch(model.modelId, "CLOUD_GEMINI", targetProvider))
-                }
                 if (!hasCloudKey()) {
                     return Result.failure(RoutingError.CloudKeyMissing(model.modelId))
                 }
                 return Result.success(RoutedModel.Cloud(model))
             }
             RuntimeType.LITERT_LM -> {
-                if (targetProvider != "LOCAL_VAL") {
-                    return Result.failure(RoutingError.ProviderMismatch(model.modelId, "LOCAL_VAL", targetProvider))
-                }
                 if (!weightsAvailable(model)) {
                     val resolvedFile = model.targetFilePath
                     return Result.failure(RoutingError.WeightsMissing(model.modelId, resolvedFile))
@@ -53,9 +42,6 @@ object ModelRouter {
                 return Result.success(RoutedModel.LiteRtLm(model))
             }
             RuntimeType.AICORE -> {
-                if (targetProvider != "LOCAL_VAL") {
-                    return Result.failure(RoutingError.ProviderMismatch(model.modelId, "LOCAL_VAL", targetProvider))
-                }
                 return Result.failure(RoutingError.AiCoreUnsupported(model.modelId))
             }
         }

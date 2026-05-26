@@ -176,4 +176,136 @@ class OpenAiToGeminiTranslatorTest {
         assertEquals("error", choice4.getString("finish_reason"))
         assertTrue(choice4.getJSONObject("delta").getString("content").contains("Something failed"))
     }
+
+    @Test
+    fun testTranslateRequestWithMultimodalBlocks() {
+        val json = """
+            {
+                "model": "gpt-4o",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "Describe this"},
+                            {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0KGgoAAAANSUFORK5CYII="}},
+                            {"type": "input_audio", "input_audio": {"format": "mp3", "data": "SGVsbG8="}}
+                        ]
+                    }
+                ]
+            }
+        """.trimIndent()
+
+        val geminiStr = OpenAiToGeminiTranslator.translateRequest(json)
+        val geminiObj = JSONObject(geminiStr)
+
+        val contents = geminiObj.getJSONArray("contents")
+        assertEquals(1, contents.length())
+        val msg = contents.getJSONObject(0)
+        assertEquals("user", msg.getString("role"))
+        val parts = msg.getJSONArray("parts")
+        assertEquals(3, parts.length())
+
+        val textPart = parts.getJSONObject(0)
+        assertEquals("Describe this", textPart.getString("text"))
+
+        val imagePart = parts.getJSONObject(1)
+        val imageInline = imagePart.getJSONObject("inlineData")
+        assertEquals("image/png", imageInline.getString("mimeType"))
+        assertEquals("iVBORw0KGgoAAAANSUFORK5CYII=", imageInline.getString("data"))
+
+        val audioPart = parts.getJSONObject(2)
+        val audioInline = audioPart.getJSONObject("inlineData")
+        assertEquals("audio/mp3", audioInline.getString("mimeType"))
+        assertEquals("SGVsbG8=", audioInline.getString("data"))
+    }
+
+    @Test
+    fun testTranslateRequestThrowsOnHttpAndMalformed() {
+        // Test HTTP link rejection
+        val httpJson = """
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "image_url", "image_url": {"url": "https://example.com/image.png"}}
+                        ]
+                    }
+                ]
+            }
+        """.trimIndent()
+
+        try {
+            OpenAiToGeminiTranslator.translateRequest(httpJson)
+            fail("Should have thrown MultimodalParseException for HTTP link")
+        } catch (e: OpenAiToGeminiTranslator.MultimodalParseException) {
+            assertTrue(e.message!!.contains("not supported"))
+        }
+
+        // Test non-data scheme rejection
+        val badSchemeJson = """
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "image_url", "image_url": {"url": "ftp://example.com/image.png"}}
+                        ]
+                    }
+                ]
+            }
+        """.trimIndent()
+
+        try {
+            OpenAiToGeminiTranslator.translateRequest(badSchemeJson)
+            fail("Should have thrown MultimodalParseException for FTP scheme")
+        } catch (e: OpenAiToGeminiTranslator.MultimodalParseException) {
+            assertTrue(e.message!!.contains("only data: URIs are supported"))
+        }
+
+        // Test missing base64
+        val noBase64Json = """
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "image_url", "image_url": {"url": "data:image/png,1234"}}
+                        ]
+                    }
+                ]
+            }
+        """.trimIndent()
+
+        try {
+            OpenAiToGeminiTranslator.translateRequest(noBase64Json)
+            fail("Should have thrown MultimodalParseException for missing base64 declaration")
+        } catch (e: OpenAiToGeminiTranslator.MultimodalParseException) {
+            assertTrue(e.message!!.contains("missing base64 encoding prefix"))
+        }
+    }
+
+    @Test
+    fun testExtractLocalEngineRequestWithMultimodal() {
+        val localJson = """
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "Listen to this"},
+                            {"type": "input_audio", "input_audio": {"format": "wav", "data": "AAA="}},
+                            {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,BBB="}}
+                        ]
+                    }
+                ]
+            }
+        """.trimIndent()
+
+        val req = OpenAiToGeminiTranslator.extractLocalEngineRequest(localJson)
+        assertEquals("Listen to this", req.latestUserText)
+        assertNotNull(req.rejectedMultimodalReason)
+        assertTrue(req.rejectedMultimodalReason!!.contains("input_audio"))
+        assertTrue(req.rejectedMultimodalReason!!.contains("image_url"))
+    }
 }

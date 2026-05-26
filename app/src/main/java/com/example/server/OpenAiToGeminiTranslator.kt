@@ -7,6 +7,8 @@ import java.util.UUID
 
 object OpenAiToGeminiTranslator {
 
+    class MultimodalParseException(message: String) : Exception(message)
+
     data class LocalEngineRequest(
         val systemInstruction: String?,
         val history: List<com.example.inference.LiteRtLmEngine.HistoryTurn>,
@@ -14,8 +16,78 @@ object OpenAiToGeminiTranslator {
         val maxTokens: Int,
         val temperature: Float,
         val topK: Int,
-        val topP: Float
+        val topP: Float,
+        val rejectedMultimodalReason: String? = null
     )
+
+    data class ExtractedContentResult(
+        val text: String,
+        val detectedTypes: List<String>
+    )
+
+    fun validateDataUri(url: String, typePrefix: String) {
+        if (url.startsWith("http://") || url.startsWith("https://")) {
+            throw MultimodalParseException("HTTP/HTTPS URLs are not supported: $url")
+        }
+        if (!url.startsWith("data:")) {
+            throw MultimodalParseException("Invalid URL scheme: only data: URIs are supported.")
+        }
+        val commaIndex = url.indexOf(",")
+        if (commaIndex == -1 || !url.contains(";base64,")) {
+            throw MultimodalParseException("Malformed data URI: missing base64 encoding prefix.")
+        }
+        val mimeAndBase64 = url.substring("data:".length, commaIndex)
+        if (!mimeAndBase64.endsWith(";base64")) {
+            throw MultimodalParseException("Malformed data URI: must use base64 encoding.")
+        }
+        val mimeType = mimeAndBase64.substring(0, mimeAndBase64.length - ";base64".length)
+        val base64Data = url.substring(commaIndex + 1)
+        if (mimeType.isEmpty() || base64Data.isEmpty()) {
+            throw MultimodalParseException("Malformed data URI: empty mimeType or data.")
+        }
+        if (typePrefix.isNotEmpty() && !mimeType.startsWith("$typePrefix/")) {
+            throw MultimodalParseException("Expected MIME type prefix '$typePrefix/', got: $mimeType")
+        }
+    }
+
+    fun extractTextAndDetectMultimodal(contentObj: Any?): ExtractedContentResult {
+        val sb = StringBuilder()
+        val detected = mutableListOf<String>()
+        if (contentObj is String) {
+            sb.append(contentObj)
+        } else if (contentObj is JSONArray) {
+            for (j in 0 until contentObj.length()) {
+                val subObj = contentObj.optJSONObject(j) ?: continue
+                val type = subObj.optString("type")
+                if (type == "text") {
+                    sb.append(subObj.optString("text"))
+                } else if (type == "image_url") {
+                    val imageUrlObj = subObj.optJSONObject("image_url")
+                    if (imageUrlObj == null) {
+                        throw MultimodalParseException("Missing image_url container in block.")
+                    }
+                    val url = imageUrlObj.optString("url", "")
+                    validateDataUri(url, "image")
+                    detected.add("image_url")
+                } else if (type == "input_audio") {
+                    val inputAudioObj = subObj.optJSONObject("input_audio")
+                    if (inputAudioObj == null) {
+                        throw MultimodalParseException("Missing input_audio container in block.")
+                    }
+                    val format = inputAudioObj.optString("format", "")
+                    if (format != "mp3" && format != "wav" && format != "ogg" && format != "flac") {
+                        throw MultimodalParseException("Unsupported audio format: $format")
+                    }
+                    val base64Data = inputAudioObj.optString("data", "")
+                    if (base64Data.isEmpty()) {
+                        throw MultimodalParseException("Audio data is empty")
+                    }
+                    detected.add("input_audio")
+                }
+            }
+        }
+        return ExtractedContentResult(sb.toString(), detected)
+    }
 
     /**
      * Translates an OpenAI Chat Completion request JSON into a Google Gemini REST request JSON.
@@ -30,39 +102,85 @@ object OpenAiToGeminiTranslator {
         for (i in 0 until messages.length()) {
             val msg = messages.getJSONObject(i)
             val role = msg.optString("role", "user")
-            
-            var contentText = ""
+            val isSystem = (role == "system")
+
             val contentObj = msg.opt("content")
+            
+            val partsArr = JSONArray()
+            var textOnly = ""
+
             if (contentObj is String) {
-                contentText = contentObj
+                if (contentObj.isNotEmpty()) {
+                    partsArr.put(JSONObject().put("text", contentObj))
+                    textOnly = contentObj
+                }
             } else if (contentObj is JSONArray) {
                 val sb = StringBuilder()
                 for (j in 0 until contentObj.length()) {
-                    val subObj = contentObj.optJSONObject(j)
-                    if (subObj != null) {
-                        if (subObj.optString("type") == "text") {
-                            sb.append(subObj.optString("text"))
+                    val subObj = contentObj.optJSONObject(j) ?: continue
+                    val type = subObj.optString("type")
+                    if (type == "text") {
+                        val txt = subObj.optString("text", "")
+                        if (txt.isNotEmpty()) {
+                            partsArr.put(JSONObject().put("text", txt))
+                            sb.append(txt)
+                        }
+                    } else if (!isSystem) {
+                        if (type == "image_url") {
+                            val imageUrlObj = subObj.optJSONObject("image_url")
+                            if (imageUrlObj == null) {
+                                throw MultimodalParseException("Missing image_url container in block.")
+                            }
+                            val url = imageUrlObj.optString("url", "")
+                            validateDataUri(url, "image")
+                            
+                            val commaIndex = url.indexOf(",")
+                            val mimeAndBase64 = url.substring("data:".length, commaIndex)
+                            val mimeType = mimeAndBase64.substring(0, mimeAndBase64.length - ";base64".length)
+                            val base64Data = url.substring(commaIndex + 1)
+
+                            val inlineData = JSONObject()
+                                .put("mimeType", mimeType)
+                                .put("data", base64Data)
+                            partsArr.put(JSONObject().put("inlineData", inlineData))
+                            
+                        } else if (type == "input_audio") {
+                            val inputAudioObj = subObj.optJSONObject("input_audio")
+                            if (inputAudioObj == null) {
+                                throw MultimodalParseException("Missing input_audio container in block.")
+                            }
+                            val format = inputAudioObj.optString("format", "")
+                            if (format != "mp3" && format != "wav" && format != "ogg" && format != "flac") {
+                                throw MultimodalParseException("Unsupported audio format: $format")
+                            }
+                            val base64Data = inputAudioObj.optString("data", "")
+                            if (base64Data.isEmpty()) {
+                                throw MultimodalParseException("Audio data is empty")
+                            }
+
+                            val mimeType = "audio/$format"
+                            val inlineData = JSONObject()
+                                .put("mimeType", mimeType)
+                                .put("data", base64Data)
+                            partsArr.put(JSONObject().put("inlineData", inlineData))
                         }
                     }
                 }
-                contentText = sb.toString()
+                textOnly = sb.toString()
             }
 
-            if (role == "system") {
-                systemInstructionText = contentText
+            if (isSystem) {
+                systemInstructionText = textOnly
                 continue
             }
 
-            val geminiRole = if (role == "assistant") "model" else "user"
-
-            val partObj = JSONObject().put("text", contentText)
-            val partsArr = JSONArray().put(partObj)
-
-            val contentItem = JSONObject()
-                .put("role", geminiRole)
-                .put("parts", partsArr)
-
-            CONTENTS.put(contentItem)
+            if (partsArr.length() > 0) {
+                val geminiRole = if (role == "assistant") "model" else "user"
+                val contentItem = JSONObject()
+                    .put("role", geminiRole)
+                    .put("parts", partsArr)
+                CONTENTS.put(contentItem)
+            }
         }
 
         val geminiRoot = JSONObject().put("contents", CONTENTS)
@@ -164,33 +282,25 @@ object OpenAiToGeminiTranslator {
 
         val systemList = mutableListOf<String>()
         val dialogTurns = mutableListOf<Pair<String, String>>()
+        val allDetected = mutableListOf<String>()
 
         for (i in 0 until messages.length()) {
             val msg = messages.getJSONObject(i)
             val role = msg.optString("role", "user")
             
-            var contentText = ""
             val contentObj = msg.opt("content")
-            if (contentObj is String) {
-                contentText = contentObj
-            } else if (contentObj is JSONArray) {
-                val sb = StringBuilder()
-                for (j in 0 until contentObj.length()) {
-                    val subObj = contentObj.optJSONObject(j)
-                    if (subObj != null) {
-                        if (subObj.optString("type") == "text") {
-                            sb.append(subObj.optString("text"))
-                        }
-                    }
-                }
-                contentText = sb.toString()
-            }
+            val extracted = extractTextAndDetectMultimodal(contentObj)
+            val contentText = extracted.text
 
             if (role == "system") {
                 if (contentText.isNotEmpty()) {
                     systemList.add(contentText)
                 }
                 continue
+            } else {
+                if (extracted.detectedTypes.isNotEmpty()) {
+                    allDetected.addAll(extracted.detectedTypes)
+                }
             }
 
             dialogTurns.add(Pair(role, contentText))
@@ -239,6 +349,12 @@ object OpenAiToGeminiTranslator {
         val topP = openAiObj.optDouble("top_p", 1.0).toFloat()
         val topK = openAiObj.optInt("top_k", 64)
 
+        val rejectedReason = if (allDetected.isNotEmpty()) {
+            allDetected.distinct().joinToString(" and ")
+        } else {
+            null
+        }
+
         return LocalEngineRequest(
             systemInstruction = systemInstruction,
             history = history,
@@ -246,7 +362,8 @@ object OpenAiToGeminiTranslator {
             maxTokens = maxTokens,
             temperature = temperature,
             topK = topK,
-            topP = topP
+            topP = topP,
+            rejectedMultimodalReason = rejectedReason
         )
     }
 

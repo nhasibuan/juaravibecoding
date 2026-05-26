@@ -374,6 +374,7 @@ class ProxyServerManager(
                     var httpStatus = 200
                     var outputResponseText = ""
                     var authorized = true
+                    var toolRejectedMessage = ""
 
                     try {
                         // Get active settings holding proxy api check configs
@@ -421,9 +422,9 @@ class ProxyServerManager(
 
                              com.example.data.ModelsRegistry.allowedModels.forEach { model ->
                                 val available = when (model.runtimeType) {
-                                    RuntimeType.CLOUD -> (targetProvider == "CLOUD_GEMINI" && hasCloudKey)
+                                    RuntimeType.CLOUD -> hasCloudKey
                                     RuntimeType.LITERT_LM -> {
-                                        if (targetProvider == "LOCAL_VAL") {
+                                        if (true) {
                                             val file = model.getResolvedTargetFile(context)
                                             try { file.exists() && file.isFile && file.length() > 0 } catch (_: Throwable) { false }
                                         } else {
@@ -494,201 +495,266 @@ class ProxyServerManager(
                                 val jsonObj = JSONObject(rawBody)
                                 requestModel = jsonObj.optString("model", "unknown-model")
                                 isStream = jsonObj.optBoolean("stream", false)
+
+                                val toolsArr = jsonObj.optJSONArray("tools")
+                                if (toolsArr != null && toolsArr.length() > 0) {
+                                    toolRejectedMessage = "Rejected: tools field present (501 not_implemented)"
+                                } else {
+                                    val functionsArr = jsonObj.optJSONArray("functions")
+                                    if (functionsArr != null && functionsArr.length() > 0) {
+                                        toolRejectedMessage = "Rejected: functions field present (501 not_implemented)"
+                                    }
+                                }
                             }
                         } catch (e: Exception) {
                             Log.e("ProxyServerManager", "Failed to parse requested input JSON model ID", e)
                         }
 
-                        val deviceKey = settings?.geminiApiKey ?: ""
-                        val geminiKey = if (deviceKey.isNotEmpty()) deviceKey else BuildConfig.GEMINI_API_KEY
-                        val hasCloudKey = geminiKey.isNotEmpty() && geminiKey != "MY_GEMINI_API_KEY"
-
-                        val routingResult = ModelRouter.resolve(
-                            requestedId = requestModel,
-                            settings = settings ?: com.example.data.ProxySetting(),
-                            weightsAvailable = { m ->
-                                val file = m.getResolvedTargetFile(context)
-                                try { file.exists() && file.isFile && file.length() > 0 } catch (_: Throwable) { false }
-                            },
-                            hasCloudKey = { hasCloudKey }
-                        )
-
-                        if (routingResult.isFailure) {
-                            val err = routingResult.exceptionOrNull() as? RoutingError ?: RoutingError.UnknownModel(requestModel)
-                            httpStatus = err.httpStatus
-                            outputResponseText = org.json.JSONObject()
-                                .put("error", org.json.JSONObject()
-                                    .put("message", err.msg)
-                                    .put("type", err.type)
-                                    .put("param", org.json.JSONObject.NULL)
-                                    .put("code", err.httpStatus)
-                                 ).toString()
-                            sendJsonResponse(outputStream, httpStatus, outputResponseText)
+                        if (toolRejectedMessage.isNotEmpty()) {
+                            httpStatus = 501
+                            val errObj = JSONObject()
+                                .put("message", "Function calling and tool use capabilities are not implemented yet. Please remove the 'tools' or 'functions' parameter from your request, or use a tools-capable gateway.")
+                                .put("type", "not_implemented")
+                                .put("param", JSONObject.NULL)
+                                .put("code", 501)
+                            outputResponseText = JSONObject().put("error", errObj).toString()
+                            sendJsonResponse(outputStream, 501, outputResponseText)
                         } else {
+                            val deviceKey = settings?.geminiApiKey ?: ""
+                            val geminiKey = if (deviceKey.isNotEmpty()) deviceKey else BuildConfig.GEMINI_API_KEY
+                            val hasCloudKey = geminiKey.isNotEmpty() && geminiKey != "MY_GEMINI_API_KEY"
+
+                            val routingResult = ModelRouter.resolve(
+                                requestedId = requestModel,
+
+                                weightsAvailable = { m ->
+                                    val file = m.getResolvedTargetFile(context)
+                                    try { file.exists() && file.isFile && file.length() > 0 } catch (_: Throwable) { false }
+                                },
+                                hasCloudKey = { hasCloudKey }
+                            )
+
+                            if (routingResult.isFailure) {
+                                val err = routingResult.exceptionOrNull() as? RoutingError ?: RoutingError.UnknownModel(requestModel)
+                                httpStatus = err.httpStatus
+                                outputResponseText = org.json.JSONObject()
+                                    .put("error", org.json.JSONObject()
+                                        .put("message", err.msg)
+                                        .put("type", err.type)
+                                        .put("param", org.json.JSONObject.NULL)
+                                        .put("code", err.httpStatus)
+                                     ).toString()
+                                sendJsonResponse(outputStream, httpStatus, outputResponseText)
+                            } else {
                             when (val routed = routingResult.getOrThrow()) {
                                 is RoutedModel.Cloud -> {
                                     val cloudModelInfo = routed.info
                                     val upstreamId = cloudModelInfo.cloudUpstreamId ?: cloudModelInfo.modelId
+                                    if (isStream) {
+                                        httpStatus = 501
+                                        val errObj = JSONObject()
+                                            .put("message", "Cloud streaming holds a future milestone and is not implemented yet. Please set 'stream' to false, or use local models for streaming.")
+                                            .put("type", "not_implemented")
+                                            .put("param", JSONObject.NULL)
+                                            .put("code", 501)
+                                        outputResponseText = JSONObject().put("error", errObj).toString()
+                                        sendJsonResponse(outputStream, 501, outputResponseText)
+                                    } else {
                                     val geminiUrl = "https://generativelanguage.googleapis.com/v1beta/models/$upstreamId:generateContent?key=$geminiKey"
                                     
-                                    val geminiPayload = OpenAiToGeminiTranslator.translateRequest(rawBody)
-                                    val mediaType = "application/json".toMediaType()
-                                    val reqBodyArgs = geminiPayload.toRequestBody(mediaType)
+                                    try {
+                                        val geminiPayload = OpenAiToGeminiTranslator.translateRequest(rawBody)
+                                        val mediaType = "application/json".toMediaType()
+                                        val reqBodyArgs = geminiPayload.toRequestBody(mediaType)
 
-                                    val googleRequest = Request.Builder()
-                                        .url(geminiUrl)
-                                        .post(reqBodyArgs)
-                                        .build()
+                                        val googleRequest = Request.Builder()
+                                            .url(geminiUrl)
+                                            .post(reqBodyArgs)
+                                            .build()
 
-                                    okHttpClient.newCall(googleRequest).execute().use { response ->
-                                        val code = response.code
-                                        val responseBody = response.body?.string() ?: ""
+                                        okHttpClient.newCall(googleRequest).execute().use { response ->
+                                            val code = response.code
+                                            val responseBody = response.body?.string() ?: ""
 
-                                        if (code == 200) {
-                                            if (isStream) {
-                                                val geminiObj = JSONObject(responseBody)
-                                                val candidates = geminiObj.optJSONArray("candidates")
-                                                var textContent = "No response text found."
-                                                if (candidates != null && candidates.length() > 0) {
-                                                    val firstCandidate = candidates.getJSONObject(0)
-                                                    val contentObj = firstCandidate.optJSONObject("content")
-                                                    if (contentObj != null) {
-                                                        val parts = contentObj.optJSONArray("parts")
-                                                        if (parts != null && parts.length() > 0) {
-                                                            textContent = parts.getJSONObject(0).optString("text", "")
+                                            if (code == 200) {
+                                                if (isStream) {
+                                                    val geminiObj = JSONObject(responseBody)
+                                                    val candidates = geminiObj.optJSONArray("candidates")
+                                                    var textContent = "No response text found."
+                                                    if (candidates != null && candidates.length() > 0) {
+                                                        val firstCandidate = candidates.getJSONObject(0)
+                                                        val contentObj = firstCandidate.optJSONObject("content")
+                                                        if (contentObj != null) {
+                                                            val parts = contentObj.optJSONArray("parts")
+                                                            if (parts != null && parts.length() > 0) {
+                                                                textContent = parts.getJSONObject(0).optString("text", "")
+                                                            }
                                                         }
                                                     }
+
+                                                    sendSseHeaders(outputStream)
+                                                    val chatCmplId = "chatcmpl-" + UUID.randomUUID().toString().replace("-", "").take(24)
+                                                    val writer = PrintWriter(OutputStreamWriter(outputStream, StandardCharsets.UTF_8), true)
+                                                    
+                                                    val chunk1 = OpenAiToGeminiTranslator.streamingFirstDelta(chatCmplId, requestModel, "cloud", 0L, false)
+                                                    writer.print("data: $chunk1\n\n")
+                                                    writer.flush()
+
+                                                    val chunk2 = OpenAiToGeminiTranslator.streamingContentDelta(chatCmplId, requestModel, textContent, "cloud", 0L, false)
+                                                    writer.print("data: $chunk2\n\n")
+                                                    writer.flush()
+
+                                                    val chunk3 = OpenAiToGeminiTranslator.streamingFinish(chatCmplId, requestModel, "cloud", 0L, false)
+                                                    writer.print("data: $chunk3\n\n")
+                                                    writer.flush()
+
+                                                    writer.print("data: [DONE]\n\n")
+                                                    writer.flush()
+
+                                                    outputResponseText = textContent
+                                                } else {
+                                                    val openAiFormat = OpenAiToGeminiTranslator.translateResponse(responseBody, requestModel)
+                                                    outputResponseText = openAiFormat
+                                                    sendJsonResponse(outputStream, 200, openAiFormat)
                                                 }
-
-                                                sendSseHeaders(outputStream)
-                                                val chatCmplId = "chatcmpl-" + UUID.randomUUID().toString().replace("-", "").take(24)
-                                                val writer = PrintWriter(OutputStreamWriter(outputStream, StandardCharsets.UTF_8), true)
-                                                
-                                                val chunk1 = OpenAiToGeminiTranslator.streamingFirstDelta(chatCmplId, requestModel, "cloud", 0L, false)
-                                                writer.print("data: $chunk1\n\n")
-                                                writer.flush()
-
-                                                val chunk2 = OpenAiToGeminiTranslator.streamingContentDelta(chatCmplId, requestModel, textContent, "cloud", 0L, false)
-                                                writer.print("data: $chunk2\n\n")
-                                                writer.flush()
-
-                                                val chunk3 = OpenAiToGeminiTranslator.streamingFinish(chatCmplId, requestModel, "cloud", 0L, false)
-                                                writer.print("data: $chunk3\n\n")
-                                                writer.flush()
-
-                                                writer.print("data: [DONE]\n\n")
-                                                writer.flush()
-
-                                                outputResponseText = textContent
                                             } else {
-                                                val openAiFormat = OpenAiToGeminiTranslator.translateResponse(responseBody, requestModel)
-                                                outputResponseText = openAiFormat
-                                                sendJsonResponse(outputStream, 200, openAiFormat)
+                                                httpStatus = code
+                                                outputResponseText = "{\"error\": {\"message\": \"Inward Gemini Error: $responseBody\", \"type\": \"upstream_error\", \"code\": $code}}"
+                                                sendJsonResponse(outputStream, code, outputResponseText)
                                             }
-                                        } else {
-                                            httpStatus = code
-                                            outputResponseText = "{\"error\": {\"message\": \"Inward Gemini Error: $responseBody\", \"type\": \"upstream_error\", \"code\": $code}}"
-                                            sendJsonResponse(outputStream, code, outputResponseText)
                                         }
+                                    } catch (mpe: OpenAiToGeminiTranslator.MultimodalParseException) {
+                                        httpStatus = 400
+                                        val errObj = JSONObject()
+                                            .put("message", mpe.message)
+                                            .put("type", "invalid_request_error")
+                                            .put("param", JSONObject.NULL)
+                                            .put("code", 400)
+                                        outputResponseText = JSONObject().put("error", errObj).toString()
+                                        sendJsonResponse(outputStream, 400, outputResponseText)
+                                    }
                                     }
                                 }
                                 is RoutedModel.LiteRtLm -> {
                                     val targetModelInfo = routed.info
-                                    val localReq = OpenAiToGeminiTranslator.extractLocalEngineRequest(rawBody)
-                                    val params = com.example.inference.LiteRtLmEngine.GenerationParams(
-                                        maxOutputTokens = localReq.maxTokens,
-                                        temperature = localReq.temperature,
-                                        topK = localReq.topK,
-                                        topP = localReq.topP
-                                    )
-
-                                    val loadErr = com.example.inference.LiteRtLmEngine.ensureLoadedAndReset(
-                                        context = context,
-                                        model = targetModelInfo,
-                                        params = params,
-                                        systemInstruction = localReq.systemInstruction,
-                                        history = localReq.history,
-                                        npuOptIn = settings?.enableNpuBackend ?: false
-                                    )
-
-                                    if (loadErr != null) {
-                                        val (code, body) = OpenAiToGeminiTranslator.wrapLocalError(loadErr, requestModel)
-                                        httpStatus = code
-                                        outputResponseText = body
-                                        sendJsonResponse(outputStream, code, body)
-                                    } else {
-                                        if (isStream) {
-                                            sendSseHeaders(outputStream)
-                                            val chatCmplId = "chatcmpl-" + UUID.randomUUID().toString().replace("-", "").take(24)
-                                            val writer = PrintWriter(OutputStreamWriter(outputStream, StandardCharsets.UTF_8), true)
-                                            
-                                            val cacheReused = com.example.inference.LiteRtLmEngine.isKvCacheReused
-                                            val backendName = com.example.inference.LiteRtLmEngine.activeBackendName
-                                            val streamStartTime = System.currentTimeMillis()
-
-                                            val firstChunk = OpenAiToGeminiTranslator.streamingFirstDelta(
-                                                chatCmplId, requestModel, backendName, 0L, cacheReused
-                                            )
-                                            writer.print("data: $firstChunk\n\n")
-                                            writer.flush()
-
-                                            var accumulatedText = ""
-                                            try {
-                                                val result = com.example.inference.LiteRtLmEngine.generateStreaming(localReq.latestUserText) { deltaText ->
-                                                    accumulatedText += deltaText
-                                                    val latencyMs = System.currentTimeMillis() - streamStartTime
-                                                    if (writer.checkError()) {
-                                                        throw java.io.IOException("Client disconnected mid-stream")
-                                                    }
-                                                    val contentChunk = OpenAiToGeminiTranslator.streamingContentDelta(
-                                                        chatCmplId, requestModel, deltaText, backendName, latencyMs, cacheReused
-                                                    )
-                                                    writer.print("data: $contentChunk\n\n")
-                                                    writer.flush()
-                                                }
-
-                                                val finalLatency = System.currentTimeMillis() - streamStartTime
-                                                when (result) {
-                                                    is com.example.inference.LiteRtLmEngine.Result.Ok -> {
-                                                        val finishChunk = OpenAiToGeminiTranslator.streamingFinish(
-                                                            chatCmplId, requestModel, backendName, finalLatency, cacheReused
-                                                        )
-                                                        writer.print("data: $finishChunk\n\n")
-                                                        writer.print("data: [DONE]\n\n")
-                                                        writer.flush()
-                                                        outputResponseText = accumulatedText
-                                                    }
-                                                    is com.example.inference.LiteRtLmEngine.Result.Err -> {
-                                                        val errorChunk = OpenAiToGeminiTranslator.streamingError(
-                                                            chatCmplId, requestModel, result.message, backendName, finalLatency, cacheReused
-                                                        )
-                                                        writer.print("data: $errorChunk\n\n")
-                                                        writer.print("data: [DONE]\n\n")
-                                                        writer.flush()
-                                                        outputResponseText = "[Error: ${result.message}]"
-                                                    }
-                                                }
-                                            } catch (ioEx: java.io.IOException) {
-                                                Log.i("ProxyServerManager", "Client disconnected mid-stream: ${ioEx.localizedMessage}")
-                                                com.example.inference.LiteRtLmEngine.cancel()
-                                                httpStatus = 499
-                                                outputResponseText = "[Client Disconnected Status 499]"
-                                            }
+                                    try {
+                                        val localReq = OpenAiToGeminiTranslator.extractLocalEngineRequest(rawBody)
+                                        
+                                        if (localReq.rejectedMultimodalReason != null) {
+                                            httpStatus = 400
+                                            val errObj = JSONObject()
+                                                .put("message", "Local engine does not support multimodal inputs of type: ${localReq.rejectedMultimodalReason}")
+                                                .put("type", "multimodal_not_supported")
+                                                .put("param", JSONObject.NULL)
+                                                .put("code", 400)
+                                            outputResponseText = JSONObject().put("error", errObj).toString()
+                                            sendJsonResponse(outputStream, 400, outputResponseText)
                                         } else {
-                                            when (val r = com.example.inference.LiteRtLmEngine.generate(localReq.latestUserText)) {
-                                                is com.example.inference.LiteRtLmEngine.Result.Ok -> {
-                                                    val successResponse = OpenAiToGeminiTranslator.wrapLocalSuccess(r, requestModel)
-                                                    outputResponseText = successResponse
-                                                    sendJsonResponse(outputStream, 200, successResponse)
-                                                }
-                                                is com.example.inference.LiteRtLmEngine.Result.Err -> {
-                                                    val (code, body) = OpenAiToGeminiTranslator.wrapLocalError(r, requestModel)
-                                                    httpStatus = code
-                                                    outputResponseText = body
-                                                    sendJsonResponse(outputStream, code, body)
+                                            val params = com.example.inference.LiteRtLmEngine.GenerationParams(
+                                                maxOutputTokens = localReq.maxTokens,
+                                                temperature = localReq.temperature,
+                                                topK = localReq.topK,
+                                                topP = localReq.topP
+                                            )
+
+                                            val loadErr = com.example.inference.LiteRtLmEngine.ensureLoadedAndReset(
+                                                context = context,
+                                                model = targetModelInfo,
+                                                params = params,
+                                                systemInstruction = localReq.systemInstruction,
+                                                history = localReq.history,
+                                                npuOptIn = settings?.enableNpuBackend ?: false
+                                            )
+
+                                            if (loadErr != null) {
+                                                val (code, body) = OpenAiToGeminiTranslator.wrapLocalError(loadErr, requestModel)
+                                                httpStatus = code
+                                                outputResponseText = body
+                                                sendJsonResponse(outputStream, code, body)
+                                            } else {
+                                                if (isStream) {
+                                                    sendSseHeaders(outputStream)
+                                                    val chatCmplId = "chatcmpl-" + UUID.randomUUID().toString().replace("-", "").take(24)
+                                                    val writer = PrintWriter(OutputStreamWriter(outputStream, StandardCharsets.UTF_8), true)
+                                                    
+                                                    val cacheReused = com.example.inference.LiteRtLmEngine.isKvCacheReused
+                                                    val backendName = com.example.inference.LiteRtLmEngine.activeBackendName
+                                                    val streamStartTime = System.currentTimeMillis()
+
+                                                    val firstChunk = OpenAiToGeminiTranslator.streamingFirstDelta(
+                                                        chatCmplId, requestModel, backendName, 0L, cacheReused
+                                                    )
+                                                    writer.print("data: $firstChunk\n\n")
+                                                    writer.flush()
+
+                                                    var accumulatedText = ""
+                                                    try {
+                                                        val result = com.example.inference.LiteRtLmEngine.generateStreaming(localReq.latestUserText) { deltaText ->
+                                                            accumulatedText += deltaText
+                                                            val latencyMs = System.currentTimeMillis() - streamStartTime
+                                                            if (writer.checkError()) {
+                                                                throw java.io.IOException("Client disconnected mid-stream")
+                                                            }
+                                                            val contentChunk = OpenAiToGeminiTranslator.streamingContentDelta(
+                                                                chatCmplId, requestModel, deltaText, backendName, latencyMs, cacheReused
+                                                            )
+                                                            writer.print("data: $contentChunk\n\n")
+                                                            writer.flush()
+                                                        }
+
+                                                        val finalLatency = System.currentTimeMillis() - streamStartTime
+                                                        when (result) {
+                                                            is com.example.inference.LiteRtLmEngine.Result.Ok -> {
+                                                                val finishChunk = OpenAiToGeminiTranslator.streamingFinish(
+                                                                    chatCmplId, requestModel, backendName, finalLatency, cacheReused
+                                                                )
+                                                                writer.print("data: $finishChunk\n\n")
+                                                                writer.print("data: [DONE]\n\n")
+                                                                writer.flush()
+                                                                outputResponseText = accumulatedText
+                                                            }
+                                                            is com.example.inference.LiteRtLmEngine.Result.Err -> {
+                                                                val errorChunk = OpenAiToGeminiTranslator.streamingError(
+                                                                    chatCmplId, requestModel, result.message, backendName, finalLatency, cacheReused
+                                                                )
+                                                                writer.print("data: $errorChunk\n\n")
+                                                                writer.print("data: [DONE]\n\n")
+                                                                writer.flush()
+                                                                outputResponseText = "[Error: ${result.message}]"
+                                                            }
+                                                        }
+                                                    } catch (ioEx: java.io.IOException) {
+                                                        Log.i("ProxyServerManager", "Client disconnected mid-stream: ${ioEx.localizedMessage}")
+                                                        com.example.inference.LiteRtLmEngine.cancel()
+                                                        httpStatus = 499
+                                                        outputResponseText = "[Client Disconnected Status 499]"
+                                                    }
+                                                } else {
+                                                    when (val r = com.example.inference.LiteRtLmEngine.generate(localReq.latestUserText)) {
+                                                        is com.example.inference.LiteRtLmEngine.Result.Ok -> {
+                                                            val successResponse = OpenAiToGeminiTranslator.wrapLocalSuccess(r, requestModel)
+                                                            outputResponseText = successResponse
+                                                            sendJsonResponse(outputStream, 200, successResponse)
+                                                        }
+                                                        is com.example.inference.LiteRtLmEngine.Result.Err -> {
+                                                            val (code, body) = OpenAiToGeminiTranslator.wrapLocalError(r, requestModel)
+                                                            httpStatus = code
+                                                            outputResponseText = body
+                                                            sendJsonResponse(outputStream, code, body)
+                                                        }
+                                                    }
                                                 }
                                             }
                                         }
+                                    } catch (mpe: OpenAiToGeminiTranslator.MultimodalParseException) {
+                                        httpStatus = 400
+                                        val errObj = JSONObject()
+                                            .put("message", mpe.message)
+                                            .put("type", "invalid_request_error")
+                                            .put("param", JSONObject.NULL)
+                                            .put("code", 400)
+                                        outputResponseText = JSONObject().put("error", errObj).toString()
+                                        sendJsonResponse(outputStream, 400, outputResponseText)
                                     }
                                 }
                                 is RoutedModel.AiCore -> {
@@ -698,17 +764,22 @@ class ProxyServerManager(
                                 }
                             }
                         }
+                        }
 
                         val duration = System.currentTimeMillis() - startTime
 
                         // Extract preview for database log displays
-                        val preview = try {
-                            val outObj = JSONObject(outputResponseText)
-                            val firstChoice = outObj.getJSONArray("choices").getJSONObject(0)
-                            val contentText = firstChoice.getJSONObject("message").getString("content")
-                            contentText.take(120) + (if (contentText.length > 120) "..." else "")
-                        } catch (e: Exception) {
-                            "Raw: " + outputResponseText.take(100)
+                        val preview = if (toolRejectedMessage.isNotEmpty()) {
+                            toolRejectedMessage
+                        } else {
+                            try {
+                                val outObj = JSONObject(outputResponseText)
+                                val firstChoice = outObj.getJSONArray("choices").getJSONObject(0)
+                                val contentText = firstChoice.getJSONObject("message").getString("content")
+                                contentText.take(120) + (if (contentText.length > 120) "..." else "")
+                            } catch (e: Exception) {
+                                "Raw: " + outputResponseText.take(100)
+                            }
                         }
 
                         // Insert into tracking database logs safely
