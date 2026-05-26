@@ -1,8 +1,13 @@
 package com.example.inference
 
+import android.content.Context
+import androidx.test.core.app.ApplicationProvider
 import org.junit.Assert.*
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
 
+@RunWith(RobolectricTestRunner::class)
 class AiCoreEngineTest {
 
     @Test
@@ -37,9 +42,10 @@ class AiCoreEngineTest {
 
     @Test
     fun testEnsureLoadedAndResetErrorsWhenSdkMissing() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
         val result = kotlinx.coroutines.runBlocking {
             AiCoreEngine.ensureLoadedAndReset(
-                context = org.mockito.Mockito.mock(android.content.Context::class.java),
+                context = context,
                 modelId = "gemini-nano",
                 params = AiCoreEngine.GenerationParams(100, 1.0f, 40, 0.9f),
                 systemInstruction = null,

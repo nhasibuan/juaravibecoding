@@ -125,7 +125,7 @@ Integrates `HttpErrors.jsonError(...)` support with two overloads (supporting di
 
 ### §7.1 Unit Tests (Verifiable on local JVM)
 *   `ModelRouterTest.kt`: Fully written and successfully executed (exceeding initial plans with 14 detailed cases covering keys, weights, and fallback scenarios).
-*   `OpenAiToGeminiTranslatorTest.kt`: **Deferred / Not yet landed.**
+*   `OpenAiToGeminiTranslatorTest.kt`: Fully written and successfully executed (verifying translator schemas, request outputs, error layouts, streaming deltas, and multi-modal block filters under Robolectric).
 *   `AiCoreEngineTest.kt`: Added to verify the behavior of the classpath probe under different package states.
 
 ### §7.2 Integration Tests
