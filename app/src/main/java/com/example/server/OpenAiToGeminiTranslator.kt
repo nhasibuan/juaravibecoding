@@ -288,6 +288,108 @@ object OpenAiToGeminiTranslator {
             .toString()
     }
 
+    // ------------------------------------------------------------------------
+    // Streaming (SSE) helpers — produce OpenAI-shaped chat.completion.chunk frames.
+    // ------------------------------------------------------------------------
+
+    /**
+     * Generates a fresh stream id and the matching `created` epoch-second, both
+     * shared across every frame in the stream so OpenAI clients can group them.
+     */
+    fun newStreamSession(): Pair<String, Long> {
+        val id = "chatcmpl-" + UUID.randomUUID().toString().replace("-", "").take(24)
+        return id to (System.currentTimeMillis() / 1000)
+    }
+
+    /**
+     * The opening `delta: { "role": "assistant" }` chunk every OpenAI stream
+     * starts with. Tells clients to start rendering an assistant message.
+     */
+    fun streamingFirstDelta(streamId: String, createdSec: Long, openAiModel: String): String {
+        val choice = JSONObject()
+            .put("index", 0)
+            .put("delta", JSONObject().put("role", "assistant"))
+            .put("finish_reason", JSONObject.NULL)
+        return JSONObject()
+            .put("id", streamId)
+            .put("object", "chat.completion.chunk")
+            .put("created", createdSec)
+            .put("model", openAiModel)
+            .put("choices", JSONArray().put(choice))
+            .toString()
+    }
+
+    /** A `delta: { "content": "<chunk>" }` frame with a slice of new text. */
+    fun streamingContentDelta(
+        streamId: String,
+        createdSec: Long,
+        openAiModel: String,
+        deltaText: String
+    ): String {
+        val choice = JSONObject()
+            .put("index", 0)
+            .put("delta", JSONObject().put("content", deltaText))
+            .put("finish_reason", JSONObject.NULL)
+        return JSONObject()
+            .put("id", streamId)
+            .put("object", "chat.completion.chunk")
+            .put("created", createdSec)
+            .put("model", openAiModel)
+            .put("choices", JSONArray().put(choice))
+            .toString()
+    }
+
+    /**
+     * The terminating frame: empty `delta`, set `finish_reason`, and an
+     * approximate `usage` block (LiteRT-LM doesn't surface token counts so we
+     * use the same 4-chars-per-token heuristic as [wrapLocalSuccess]).
+     * Honest provenance lives in `system_fingerprint` exactly like the
+     * non-streaming path.
+     */
+    fun streamingFinish(
+        streamId: String,
+        createdSec: Long,
+        openAiModel: String,
+        result: LiteRtLmEngine.Result.Ok
+    ): String {
+        val choice = JSONObject()
+            .put("index", 0)
+            .put("delta", JSONObject())
+            .put("finish_reason", "stop")
+        val usage = JSONObject()
+            .put("prompt_tokens", result.promptTokens)
+            .put("completion_tokens", result.completionTokens)
+            .put("total_tokens", result.promptTokens + result.completionTokens)
+        return JSONObject()
+            .put("id", streamId)
+            .put("object", "chat.completion.chunk")
+            .put("created", createdSec)
+            .put("model", openAiModel)
+            .put("choices", JSONArray().put(choice))
+            .put("usage", usage)
+            .put(
+                "system_fingerprint",
+                "litertlm:${result.backendUsed}:${result.totalLatencyMs}ms" +
+                        ":cache=${if (result.kvCacheReused) "hit" else "miss"}"
+            )
+            .toString()
+    }
+
+    /**
+     * An OpenAI-shaped error frame for use inside a streaming response. Some
+     * clients tolerate this; many treat it as fatal and disconnect. Either
+     * way, callers should follow it with the `[DONE]` sentinel and close the
+     * socket.
+     */
+    fun streamingError(message: String, type: String, openAiModel: String): String {
+        return JSONObject()
+            .put("error", JSONObject()
+                .put("message", message)
+                .put("type", type))
+            .put("model", openAiModel)
+            .toString()
+    }
+
     /**
      * Maps a LiteRT-LM error onto an OpenAI-shaped error envelope and an HTTP status code.
      */

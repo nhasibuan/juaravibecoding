@@ -14,7 +14,9 @@ import com.google.ai.edge.litertlm.EngineConfig
 import com.google.ai.edge.litertlm.ExperimentalApi
 import com.google.ai.edge.litertlm.ExperimentalFlags
 import com.google.ai.edge.litertlm.Message
+import com.google.ai.edge.litertlm.MessageCallback
 import com.google.ai.edge.litertlm.SamplerConfig
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -376,6 +378,145 @@ object LiteRtLmEngine {
                 cause = t
             )
         }
+    }
+
+    /**
+     * Streaming counterpart of [generate]. Calls [onDelta] for each *new* slice
+     * of text as the model emits it, then returns a final [Result] when the
+     * generation finishes (or fails).
+     *
+     * - [onDelta] is invoked synchronously from the LiteRT-LM callback thread
+     *   with text delta chunks (the substring since the last call) and the
+     *   current accumulated thought channel (if any). It is **not** suspend —
+     *   blocking writes inside it provide natural backpressure. If [onDelta]
+     *   throws (e.g. the client closed the socket), generation is cancelled
+     *   via [Conversation.cancelProcess] and an `inference_failed` Err is
+     *   returned.
+     * - The returned [Result.Ok] carries the final accumulated text and
+     *   honest provenance (latency, backend, KV-cache-hit flag) just like
+     *   [generate].
+     *
+     * Mirrors gallery's `LlmChatModelHelper.runInference` async pattern,
+     * adapted to a coroutine bridge via [CompletableDeferred].
+     */
+    suspend fun generateStreaming(
+        userText: String,
+        onDelta: (text: String, accumulatedThinking: String?) -> Unit
+    ): Result = withContext(Dispatchers.Default) {
+        val convo = conversation
+            ?: return@withContext Result.Err(
+                type = "engine_not_ready",
+                message = "Engine has not been initialized. Call ensureLoadedAndReset first."
+            )
+
+        val priorSnapshot = lastResetSnapshot
+        val priorTurnCount = priorSnapshot?.completedTurns?.size ?: -1
+        val backendName = loadedKey?.backend ?: "unknown"
+        val started = System.currentTimeMillis()
+
+        val deferred = CompletableDeferred<Result>()
+        var lastSentLength = 0
+        var finalThinking: String? = null
+        val finalAccumulated = StringBuilder()
+
+        try {
+            convo.sendMessageAsync(
+                Contents.of(listOf(Content.Text(userText))),
+                object : MessageCallback {
+                    override fun onMessage(message: Message) {
+                        // The SDK delivers an accumulated message each time;
+                        // OpenAI's streaming format wants the *delta* since
+                        // the last frame. Track lastSentLength to slice it.
+                        try {
+                            val full = message.toString()
+                            finalThinking = message.channels["thought"]
+                            if (full.length > lastSentLength) {
+                                val delta = full.substring(lastSentLength)
+                                lastSentLength = full.length
+                                onDelta(delta, finalThinking)
+                            }
+                            finalAccumulated.clear()
+                            finalAccumulated.append(full)
+                        } catch (t: Throwable) {
+                            // The SSE writer threw (typically client disconnect).
+                            // Cancel generation and surface as inference_failed
+                            // — the engine's conversation may be in a dirty state.
+                            try { convo.cancelProcess() } catch (_: Throwable) { /* ignore */ }
+                            lastResetSnapshot = null
+                            if (!deferred.isCompleted) {
+                                deferred.complete(
+                                    Result.Err(
+                                        type = "inference_failed",
+                                        message = "Streaming sink failed: ${t.message ?: "unknown"}",
+                                        cause = t
+                                    )
+                                )
+                            }
+                        }
+                    }
+
+                    override fun onDone() {
+                        if (deferred.isCompleted) return
+                        val elapsed = System.currentTimeMillis() - started
+                        val replyText = finalAccumulated.toString()
+                        val promptApprox = (userText.length / 4).coerceAtLeast(1)
+                        val completionApprox = (replyText.length / 4).coerceAtLeast(1)
+
+                        // Extend the snapshot for future cache hits, mirroring
+                        // generate(). See generate() for the racing-snapshot
+                        // safety analysis.
+                        val current = lastResetSnapshot
+                        if (current != null && current === priorSnapshot) {
+                            lastResetSnapshot = current.copy(
+                                completedTurns = current.completedTurns +
+                                        HistoryTurn(HistoryRole.USER, userText) +
+                                        HistoryTurn(HistoryRole.ASSISTANT, replyText)
+                            )
+                        }
+
+                        deferred.complete(
+                            Result.Ok(
+                                text = replyText,
+                                thinkingText = finalThinking,
+                                promptTokens = promptApprox,
+                                completionTokens = completionApprox,
+                                totalLatencyMs = elapsed,
+                                backendUsed = backendName,
+                                kvCacheReused = priorTurnCount > 0
+                            )
+                        )
+                    }
+
+                    override fun onError(t: Throwable) {
+                        // The SDK reports CancellationException through this
+                        // hook when cancelProcess() fires, alongside genuine
+                        // inference faults. Either way, the conversation is
+                        // possibly in an undefined state — invalidate the cache.
+                        lastResetSnapshot = null
+                        if (!deferred.isCompleted) {
+                            deferred.complete(
+                                Result.Err(
+                                    type = "inference_failed",
+                                    message = t.message ?: "unknown",
+                                    cause = t
+                                )
+                            )
+                        }
+                    }
+                },
+                emptyMap<String, String>()
+            )
+        } catch (t: Throwable) {
+            Log.e(TAG, "sendMessageAsync threw synchronously", t)
+            lastResetSnapshot = null
+            return@withContext Result.Err(
+                type = "inference_failed",
+                message = t.message ?: "unknown",
+                cause = t
+            )
+        }
+
+        deferred.await()
     }
 
     /** Cancels an in-flight generation, if any. Safe to call from any thread. */

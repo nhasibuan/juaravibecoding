@@ -720,6 +720,42 @@ class ProxyServerManager(
         out.flush()
     }
 
+    /**
+     * Writes the response headers for a server-sent-events (SSE) stream:
+     * `text/event-stream`, no caching, and `Connection: close` so the client
+     * detects end-of-stream from EOF (we don't use HTTP/1.1 chunked
+     * transfer-encoding here for simplicity — most SSE clients handle the
+     * close-on-EOF pattern fine).
+     */
+    private fun sendSseHeaders(out: OutputStream) {
+        val writer = PrintWriter(OutputStreamWriter(out, StandardCharsets.UTF_8), true)
+        writer.print("HTTP/1.1 200 OK\r\n")
+        writer.print("Content-Type: text/event-stream; charset=utf-8\r\n")
+        writer.print("Cache-Control: no-cache\r\n")
+        // X-Accel-Buffering disables proxy buffering on nginx-style intermediaries.
+        writer.print("X-Accel-Buffering: no\r\n")
+        writer.print("Access-Control-Allow-Origin: *\r\n")
+        writer.print("Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n")
+        writer.print("Access-Control-Allow-Headers: Content-Type, Authorization, *\r\n")
+        writer.print("Connection: close\r\n")
+        writer.print("\r\n")
+        writer.flush()
+    }
+
+    /** Writes one `data: <json>\n\n` SSE frame and flushes the socket. */
+    private fun writeSseFrame(out: OutputStream, json: String) {
+        out.write("data: ".toByteArray(StandardCharsets.UTF_8))
+        out.write(json.toByteArray(StandardCharsets.UTF_8))
+        out.write("\n\n".toByteArray(StandardCharsets.UTF_8))
+        out.flush()
+    }
+
+    /** Writes the OpenAI-spec terminator `data: [DONE]\n\n`. */
+    private fun writeSseDone(out: OutputStream) {
+        out.write("data: [DONE]\n\n".toByteArray(StandardCharsets.UTF_8))
+        out.flush()
+    }
+
     private fun sendOptionsSuccess(out: OutputStream) {
         val writer = PrintWriter(OutputStreamWriter(out, StandardCharsets.UTF_8), true)
         writer.print("HTTP/1.1 204 No Content\r\n")
