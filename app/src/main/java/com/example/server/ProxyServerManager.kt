@@ -540,7 +540,25 @@ class ProxyServerManager(
                                     // upstream id is whatever the registry says.
                                     val upstreamId = routed.info.cloudUpstreamId ?: routed.info.modelId
 
-                                    val geminiPayload = OpenAiToGeminiTranslator.translateRequest(rawBody)
+                                    // Multimodal data: URI parsing happens inside
+                                    // translateRequest. A malformed image_url
+                                    // (e.g. http(s)://, missing data, non-base64
+                                    // data URI) throws MultimodalParseException
+                                    // which we catch here and render as a 400
+                                    // rather than letting it fall through to the
+                                    // generic "Gateway failure" 500 below.
+                                    val geminiPayload = try {
+                                        OpenAiToGeminiTranslator.translateRequest(rawBody)
+                                    } catch (mmEx: OpenAiToGeminiTranslator.MultimodalParseException) {
+                                        httpStatus = mmEx.httpStatus
+                                        outputResponseText = HttpErrors.jsonError(
+                                            message = mmEx.message ?: "Multimodal content block could not be parsed.",
+                                            type = mmEx.errType,
+                                            code = mmEx.httpStatus
+                                        )
+                                        sendJsonResponse(outputStream, mmEx.httpStatus, outputResponseText)
+                                        return@withContext
+                                    }
                                     val mediaType = "application/json".toMediaType()
                                     val reqBodyArgs = geminiPayload.toRequestBody(mediaType)
                                     val geminiUrl = "https://generativelanguage.googleapis.com/v1beta/models/" +
@@ -579,6 +597,43 @@ class ProxyServerManager(
                                     // See app/src/main/java/com/example/inference/LiteRtLmEngine.kt
                                     // for the canonical lifecycle, mirroring google-ai-edge/gallery's LlmChatModelHelper.
                                     val req = OpenAiToGeminiTranslator.extractLocalEngineRequest(rawBody)
+
+                                    // The local engine is text-only today
+                                    // (HistoryTurn(role, text)). If the request
+                                    // included image_url / input_audio blocks,
+                                    // refuse rather than silently drop them —
+                                    // a text-only reply that pretends not to
+                                    // have seen the image is a worse failure
+                                    // mode than an explicit 400. See
+                                    // plan.md §11 PR #7.
+                                    if (req.rejectedMultimodalReason != null) {
+                                        httpStatus = 400
+                                        outputResponseText = HttpErrors.jsonError(
+                                            message = req.rejectedMultimodalReason!!,
+                                            type = "multimodal_not_supported",
+                                            code = 400
+                                        )
+                                        sendJsonResponse(outputStream, 400, outputResponseText)
+                                        val duration = System.currentTimeMillis() - startTime
+                                        try {
+                                            repository.insertLog(
+                                                GatewayLog(
+                                                    method = method,
+                                                    path = path,
+                                                    requestModel = requestModel,
+                                                    clientIp = clientIp,
+                                                    status = 400,
+                                                    durationMs = duration,
+                                                    responsePreview = "Rejected: multimodal blocks on local engine (400)",
+                                                    isAuthorized = authorized
+                                                )
+                                            )
+                                        } catch (dbEx: Throwable) {
+                                            Log.e("ProxyServerManager", "DB logging failed for multimodal 400 reject", dbEx)
+                                        }
+                                        return@withContext
+                                    }
+
                                     val params = LiteRtLmEngine.GenerationParams(
                                         maxOutputTokens = req.maxTokens,
                                         temperature = req.temperature,
