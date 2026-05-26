@@ -489,14 +489,65 @@ class ProxyServerManager(
                             ""
                         }
 
-                        // Parse requested model out of the payload
+                        // Parse requested model out of the payload, and at the
+                        // same time detect whether the client is asking for
+                        // function-calling (`tools` / legacy `functions`).
+                        // We honor `tools: []` as a no-op (some clients always
+                        // send an empty array); only a non-empty tool list
+                        // counts as a request we cannot service yet.
+                        var hasToolsField = false
                         try {
                             if (rawBody.trim().isNotEmpty()) {
                                 val jsonObj = JSONObject(rawBody)
                                 requestModel = jsonObj.optString("model", "unknown-model")
+                                val tools = jsonObj.opt("tools")
+                                if (tools is org.json.JSONArray && tools.length() > 0) {
+                                    hasToolsField = true
+                                }
+                                val legacyFunctions = jsonObj.opt("functions")
+                                if (legacyFunctions is org.json.JSONArray && legacyFunctions.length() > 0) {
+                                    hasToolsField = true
+                                }
                             }
                         } catch (e: Exception) {
                             Log.e("ProxyServerManager", "Failed to parse requested input JSON model ID", e)
+                        }
+
+                        // Function calling / tool_calls round-trips are not yet
+                        // implemented (plan.md §11 PR #9). Reject early with
+                        // a 501 + `not_implemented` so clients can fall back
+                        // to a tools-free turn rather than have the gateway
+                        // silently drop the tools array on the floor and
+                        // produce a normal text reply that ignores the
+                        // requested function schema.
+                        if (hasToolsField) {
+                            httpStatus = 501
+                            outputResponseText = HttpErrors.jsonError(
+                                message = "Function calling / tool_calls is not yet implemented by this gateway. " +
+                                        "Remove the `tools` (or legacy `functions`) field from the request and retry, " +
+                                        "or use a model and gateway that supports it.",
+                                type = "not_implemented",
+                                code = 501
+                            )
+                            sendJsonResponse(outputStream, 501, outputResponseText)
+                            val duration = System.currentTimeMillis() - startTime
+                            try {
+                                repository.insertLog(
+                                    GatewayLog(
+                                        method = method,
+                                        path = path,
+                                        requestModel = requestModel,
+                                        clientIp = clientIp,
+                                        status = 501,
+                                        durationMs = duration,
+                                        responsePreview = "Rejected: tools field present (501 not_implemented)",
+                                        isAuthorized = authorized
+                                    )
+                                )
+                            } catch (dbEx: Throwable) {
+                                Log.e("ProxyServerManager", "DB logging failed for tools 501 reject", dbEx)
+                            }
+                            return@withContext
                         }
 
                         // Resolve the request to a concrete RoutedModel using
