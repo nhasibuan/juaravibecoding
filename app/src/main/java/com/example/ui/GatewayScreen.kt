@@ -57,6 +57,7 @@ fun GatewayScreen(
     val serverIp by viewModel.serverIp.collectAsStateWithLifecycle()
     val downloadProgress by viewModel.downloadProgress.collectAsStateWithLifecycle()
     val downloadStatus by viewModel.downloadStatus.collectAsStateWithLifecycle()
+    val auditLogFileInfo by viewModel.auditLogFileInfo.collectAsStateWithLifecycle()
 
     // Temporary states to allow comfortable key-in
     var portValue by remember { mutableStateOf("8080") }
@@ -937,6 +938,61 @@ fun GatewayScreen(
                         Icon(imageVector = Icons.Default.Delete, contentDescription = "Clear logs", modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(4.dp))
                         Text("CLEAR", fontSize = 11.sp)
+                    }
+                }
+            }
+
+            item {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = Color.White.copy(alpha = 0.05f)
+                    ),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, Color.Gray.copy(alpha = 0.2f))
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column {
+                            Text(
+                                text = "SINGLE FILE AUDIT TRAIL (.LOG)",
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.Gray,
+                                letterSpacing = 0.5.sp
+                            )
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = auditLogFileInfo,
+                                fontSize = 11.sp,
+                                fontFamily = FontFamily.Monospace,
+                                color = Color.White
+                            )
+                        }
+
+                        TextButton(
+                            onClick = { viewModel.forceSyncAuditLogFile() }
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Refresh,
+                                contentDescription = "Sync audit log file",
+                                modifier = Modifier.size(14.dp),
+                                tint = accentCyan
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = "SYNC TO .LOG",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = accentCyan
+                            )
+                        }
                     }
                 }
             }

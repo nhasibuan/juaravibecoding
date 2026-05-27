@@ -21,6 +21,12 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
+import java.io.File
+import java.io.FileOutputStream
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+
 
 class GatewayViewModel(
     application: Application,
@@ -45,6 +51,9 @@ class GatewayViewModel(
             initialValue = emptyList()
         )
 
+    private val _auditLogFileInfo = MutableStateFlow("gateway_audit.log (Size: 0 Bytes - Ready)")
+    val auditLogFileInfo = _auditLogFileInfo.asStateFlow()
+
     // Server-specific properties linked dynamically
     val isServerRunning = serverManager.isServerRunning
     val serverPort = serverManager.serverPort
@@ -58,6 +67,13 @@ class GatewayViewModel(
     val geminiApiKeyInput = MutableStateFlow("")
 
     init {
+        // Asynchronously update file info initially and on any new Room DB logs received
+        viewModelScope.launch {
+            logsState.collect {
+                updateAuditLogFileInfo()
+            }
+        }
+
         viewModelScope.launch {
             try {
                 // Read initial database state off the main thread
@@ -321,6 +337,56 @@ class GatewayViewModel(
         }
     }
 
+    fun updateAuditLogFileInfo() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val file = File(getApplication<Application>().filesDir, "gateway_audit.log")
+            val info = if (!file.exists()) {
+                "gateway_audit.log (Size: 0 Bytes - Ready)"
+            } else {
+                val sizeInBytes = file.length()
+                when {
+                    sizeInBytes < 1024 -> "gateway_audit.log (Size: $sizeInBytes Bytes)"
+                    sizeInBytes < 1024 * 1024 -> String.format(Locale.US, "gateway_audit.log (Size: %.2f KB)", sizeInBytes / 1024.0)
+                    else -> String.format(Locale.US, "gateway_audit.log (Size: %.2f MB)", sizeInBytes / (1024.0 * 1024.0))
+                }
+            }
+            _auditLogFileInfo.value = info
+        }
+    }
+
+    fun forceSyncAuditLogFile() {
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    val logs = logsState.value
+                    val file = File(getApplication<Application>().filesDir, "gateway_audit.log")
+                    if (file.exists()) {
+                        file.delete()
+                    }
+                    val sdf = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US)
+                    val fileContent = StringBuilder()
+                    // Loop backwards or forwards depending on order. Room logs: timestamp DESC limit 100.
+                    // We reverse it to append chronologically (top oldest, bottom newest).
+                    for (log in logs.reversed()) {
+                        val formattedTime = sdf.format(Date(log.timestamp))
+                        val authStr = if (log.isAuthorized) "AUTH_OK" else "AUTH_FAIL"
+                        val logLine = String.format(
+                            "[%s] [%s] %s %s - Status: %d - Client: %s - Model: %s - Duration: %d ms - Response: %s\n",
+                            formattedTime, authStr, log.method, log.path, log.status, log.clientIp, log.requestModel, log.durationMs, log.responsePreview
+                        )
+                        fileContent.append(logLine)
+                    }
+                    FileOutputStream(file).use { fos ->
+                        fos.write(fileContent.toString().toByteArray(Charsets.UTF_8))
+                    }
+                }
+                updateAuditLogFileInfo()
+            } catch (e: Exception) {
+                Log.e("GatewayViewModel", "Failed to rebuild audit log file", e)
+            }
+        }
+    }
+
     override fun onCleared() {
         super.onCleared()
         // Stop server thread loop safely to prevent leaks
@@ -334,7 +400,8 @@ class GatewayViewModelFactory(private val application: Application) : ViewModelP
             val database = AppDatabase.getDatabase(application)
             val repository = GatewayRepository(
                 database.proxySettingDao(),
-                database.gatewayLogDao()
+                database.gatewayLogDao(),
+                application
             )
             val serverManager = ProxyServerManager(application, repository)
             @Suppress("UNCHECKED_CAST")
