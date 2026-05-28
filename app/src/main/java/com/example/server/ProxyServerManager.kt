@@ -500,7 +500,13 @@ class ProxyServerManager(
                                 }
                             } else {
                                 val jsonObj = JSONObject(rawBody)
-                                requestModel = jsonObj.optString("model", "unknown-model")
+                                var parsedModel = jsonObj.optString("model", "unknown-model")
+                                if (parsedModel == "unknown-model" || parsedModel.trim().isEmpty()) {
+                                    val activeFallback = settings?.activeModelId ?: "litert-community/gemma-4-E2B-it-litert-lm"
+                                    Log.i("ProxyServerManager", "Omitted or invalid request model. Gracefully falling back to active catalog model: $activeFallback")
+                                    parsedModel = activeFallback
+                                }
+                                requestModel = parsedModel
                                 isStream = jsonObj.optBoolean("stream", false)
 
                                 val toolsArr = jsonObj.optJSONArray("tools")

@@ -212,6 +212,8 @@ class GatewayViewModel(
                 targetFile.parentFile?.mkdirs()
 
                 var currentUrl = urlString
+                    .replace("/blob/main/", "/resolve/main/")
+                    .replace("/blob/master/", "/resolve/master/")
                 var redirectCount = 0
                 val maxRedirects = 5
                 var activeConnection: java.net.HttpURLConnection? = null
