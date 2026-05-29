@@ -1,7 +1,6 @@
 package com.example.server
 
 import com.example.data.LocalModelInfo
-import com.example.data.ProxySetting
 import com.example.data.RuntimeType
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -13,27 +12,18 @@ import org.junit.Test
  * Unit tests for [ModelRouter]. The router is pure logic — no Android, no I/O —
  * so plain JUnit is sufficient (no Robolectric needed).
  *
- * Coverage matches plan.md §7.1 (acceptance criterion #6 in §10):
+ * Coverage matches plan.md §7.1, updated for §11 PR #8 (the global
+ * `targetProvider` gate is gone — runtime is decided per-model now):
  *   - Unknown id              -> UnknownModel
- *   - Cloud id, LOCAL_VAL     -> ProviderMismatch
  *   - Cloud id, no key        -> CloudKeyMissing
  *   - LiteRT id, no weights   -> WeightsMissing
  *   - Alias                   -> Cloud success against the aliased upstream
  *   - AICore id               -> AiCoreUnsupported
- *   - Happy paths (cloud + local)
+ *   - Happy paths (cloud + local) — both reachable concurrently
  */
 class ModelRouterTest {
 
     // ---- helpers -----------------------------------------------------------
-
-    private fun cloudSettings(geminiKey: String = "fake-key") = ProxySetting(
-        targetProvider = "CLOUD_GEMINI",
-        geminiApiKey = geminiKey
-    )
-
-    private fun localSettings() = ProxySetting(
-        targetProvider = "LOCAL_VAL"
-    )
 
     /** All-yes weights callback — useful when the test isn't about file presence. */
     private val weightsAlways: (LocalModelInfo) -> Boolean = { true }
@@ -58,7 +48,6 @@ class ModelRouterTest {
     fun unknown_model_id_returns_UnknownModel() {
         val result = ModelRouter.resolve(
             requestedId = "totally-made-up-model",
-            settings = cloudSettings(),
             weightsAvailable = weightsAlways,
             hasCloudKey = { true }
         )
@@ -73,7 +62,6 @@ class ModelRouterTest {
     fun empty_id_returns_UnknownModel() {
         val result = ModelRouter.resolve(
             requestedId = "",
-            settings = cloudSettings(),
             weightsAvailable = weightsAlways,
             hasCloudKey = { true }
         )
@@ -81,40 +69,9 @@ class ModelRouterTest {
     }
 
     @Test
-    fun cloud_id_with_LOCAL_VAL_provider_returns_ProviderMismatch() {
-        val result = ModelRouter.resolve(
-            requestedId = "gemini-2.5-flash",
-            settings = localSettings(),
-            weightsAvailable = weightsAlways,
-            hasCloudKey = { true }
-        )
-        val err = errorOf(result)
-        assertTrue(err is RoutingError.ProviderMismatch)
-        assertEquals(400, err.httpStatus)
-        assertEquals("provider_mismatch", err.type)
-        assertTrue(err.message.contains("CLOUD"))
-        assertTrue(err.message.contains("LOCAL_VAL"))
-    }
-
-    @Test
-    fun litert_id_with_CLOUD_GEMINI_provider_returns_ProviderMismatch() {
-        val result = ModelRouter.resolve(
-            requestedId = "litert-community/Gemma3-1B-IT",
-            settings = cloudSettings(),
-            weightsAvailable = weightsAlways,
-            hasCloudKey = { true }
-        )
-        val err = errorOf(result)
-        assertTrue(err is RoutingError.ProviderMismatch)
-        assertTrue(err.message.contains("LITERT_LM"))
-        assertTrue(err.message.contains("CLOUD_GEMINI"))
-    }
-
-    @Test
     fun cloud_id_with_no_key_returns_CloudKeyMissing() {
         val result = ModelRouter.resolve(
             requestedId = "gemini-2.5-flash",
-            settings = cloudSettings(geminiKey = ""),
             weightsAvailable = weightsAlways,
             hasCloudKey = { false }
         )
@@ -129,7 +86,6 @@ class ModelRouterTest {
     fun litert_id_with_missing_weights_returns_WeightsMissing() {
         val result = ModelRouter.resolve(
             requestedId = "litert-community/Gemma3-1B-IT",
-            settings = localSettings(),
             weightsAvailable = weightsNever,
             hasCloudKey = { true }
         )
@@ -144,8 +100,6 @@ class ModelRouterTest {
     fun aicore_id_returns_AiCoreUnsupported() {
         val result = ModelRouter.resolve(
             requestedId = "aicore-gemma-4-e2b",
-            // Provider doesn't matter — AICore is unconditionally rejected for now.
-            settings = cloudSettings(),
             weightsAvailable = weightsAlways,
             hasCloudKey = { true }
         )
@@ -158,10 +112,9 @@ class ModelRouterTest {
     // ---- happy paths -------------------------------------------------------
 
     @Test
-    fun cloud_id_with_correct_provider_and_key_returns_Cloud() {
+    fun cloud_id_with_key_returns_Cloud() {
         val result = ModelRouter.resolve(
             requestedId = "gemini-2.5-flash",
-            settings = cloudSettings(),
             weightsAvailable = weightsAlways,
             hasCloudKey = { true }
         )
@@ -175,10 +128,9 @@ class ModelRouterTest {
     }
 
     @Test
-    fun litert_id_with_correct_provider_and_weights_returns_LiteRtLm() {
+    fun litert_id_with_weights_returns_LiteRtLm() {
         val result = ModelRouter.resolve(
             requestedId = "litert-community/Gemma3-1B-IT",
-            settings = localSettings(),
             weightsAvailable = weightsAlways,
             hasCloudKey = { false }
         )
@@ -190,13 +142,34 @@ class ModelRouterTest {
         assertEquals("litert-community/Gemma3-1B-IT", routed.info.modelId)
     }
 
+    /**
+     * Per-model provider (plan.md §11 PR #8) — both runtimes reachable from
+     * the same gateway instance without any global toggle. Demonstrates the
+     * core behavioral change: the same router resolves a cloud id and a
+     * local id back-to-back, both as success.
+     */
+    @Test
+    fun both_cloud_and_litert_resolve_in_same_session() {
+        val cloud = ModelRouter.resolve(
+            requestedId = "gemini-2.5-flash",
+            weightsAvailable = weightsAlways,
+            hasCloudKey = { true }
+        )
+        val local = ModelRouter.resolve(
+            requestedId = "litert-community/Gemma3-1B-IT",
+            weightsAvailable = weightsAlways,
+            hasCloudKey = { true }
+        )
+        assertTrue(cloud.getOrNull() is RoutedModel.Cloud)
+        assertTrue(local.getOrNull() is RoutedModel.LiteRtLm)
+    }
+
     // ---- alias resolution --------------------------------------------------
 
     @Test
     fun openai_alias_gpt_4o_mini_resolves_to_gemini_2_5_flash() {
         val result = ModelRouter.resolve(
             requestedId = "gpt-4o-mini",
-            settings = cloudSettings(),
             weightsAvailable = weightsAlways,
             hasCloudKey = { true }
         )
@@ -216,7 +189,6 @@ class ModelRouterTest {
     fun openai_alias_gpt_3_5_turbo_also_resolves_to_flash() {
         val result = ModelRouter.resolve(
             requestedId = "gpt-3.5-turbo",
-            settings = cloudSettings(),
             weightsAvailable = weightsAlways,
             hasCloudKey = { true }
         )
@@ -230,7 +202,6 @@ class ModelRouterTest {
         // Make sure findStrict doesn't return the first entry as a fallback.
         val result = ModelRouter.resolve(
             requestedId = "gpt-9000",
-            settings = cloudSettings(),
             weightsAvailable = weightsAlways,
             hasCloudKey = { true }
         )
@@ -244,7 +215,6 @@ class ModelRouterTest {
         var weightsCalled = false
         ModelRouter.resolve(
             requestedId = "gemini-2.5-flash",
-            settings = cloudSettings(),
             weightsAvailable = {
                 weightsCalled = true
                 true
@@ -259,7 +229,6 @@ class ModelRouterTest {
         var keyCalled = false
         ModelRouter.resolve(
             requestedId = "litert-community/Gemma3-1B-IT",
-            settings = localSettings(),
             weightsAvailable = weightsAlways,
             hasCloudKey = {
                 keyCalled = true
