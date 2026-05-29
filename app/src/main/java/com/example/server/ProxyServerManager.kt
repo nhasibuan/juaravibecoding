@@ -489,20 +489,69 @@ class ProxyServerManager(
                             ""
                         }
 
-                        // Parse requested model and `stream` flag out of the
-                        // payload. We honor `stream: true` only on the local
-                        // LiteRT-LM path today; cloud streaming would need
-                        // Gemini's streamGenerateContent endpoint and is
-                        // deferred to a future PR.
+                        // Parse the requested model id plus two request flags:
+                        //  - `tools` / legacy `functions`: function-calling is not
+                        //    implemented yet (plan.md §11 PR #9). A non-empty list
+                        //    triggers an early 501 below; `tools: []` is a no-op.
+                        //  - `stream: true`: honored on the local LiteRT-LM path
+                        //    (plan.md §11 PR #6/#11); cloud streaming would need
+                        //    Gemini's streamGenerateContent endpoint and is a
+                        //    future PR.
+                        var hasToolsField = false
                         var isStreaming = false
                         try {
                             if (rawBody.trim().isNotEmpty()) {
                                 val jsonObj = JSONObject(rawBody)
                                 requestModel = jsonObj.optString("model", "unknown-model")
                                 isStreaming = jsonObj.optBoolean("stream", false)
+                                val tools = jsonObj.opt("tools")
+                                if (tools is org.json.JSONArray && tools.length() > 0) {
+                                    hasToolsField = true
+                                }
+                                val legacyFunctions = jsonObj.opt("functions")
+                                if (legacyFunctions is org.json.JSONArray && legacyFunctions.length() > 0) {
+                                    hasToolsField = true
+                                }
                             }
                         } catch (e: Exception) {
                             Log.e("ProxyServerManager", "Failed to parse requested input JSON model ID", e)
+                        }
+
+                        // Function calling / tool_calls round-trips are not yet
+                        // implemented (plan.md §11 PR #9). Reject early with
+                        // a 501 + `not_implemented` so clients can fall back
+                        // to a tools-free turn rather than have the gateway
+                        // silently drop the tools array on the floor and
+                        // produce a normal text reply that ignores the
+                        // requested function schema.
+                        if (hasToolsField) {
+                            httpStatus = 501
+                            outputResponseText = HttpErrors.jsonError(
+                                message = "Function calling / tool_calls is not yet implemented by this gateway. " +
+                                        "Remove the `tools` (or legacy `functions`) field from the request and retry, " +
+                                        "or use a model and gateway that supports it.",
+                                type = "not_implemented",
+                                code = 501
+                            )
+                            sendJsonResponse(outputStream, 501, outputResponseText)
+                            val duration = System.currentTimeMillis() - startTime
+                            try {
+                                repository.insertLog(
+                                    GatewayLog(
+                                        method = method,
+                                        path = path,
+                                        requestModel = requestModel,
+                                        clientIp = clientIp,
+                                        status = 501,
+                                        durationMs = duration,
+                                        responsePreview = "Rejected: tools field present (501 not_implemented)",
+                                        isAuthorized = authorized
+                                    )
+                                )
+                            } catch (dbEx: Throwable) {
+                                Log.e("ProxyServerManager", "DB logging failed for tools 501 reject", dbEx)
+                            }
+                            return@withContext
                         }
 
                         // Resolve the request to a concrete RoutedModel using
