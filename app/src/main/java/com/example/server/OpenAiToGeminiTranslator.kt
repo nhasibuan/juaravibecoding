@@ -19,8 +19,165 @@ import java.util.UUID
 object OpenAiToGeminiTranslator {
 
     // ------------------------------------------------------------------------
-    // Cloud path (unchanged)
+    // Cloud path
     // ------------------------------------------------------------------------
+
+    /**
+     * Thrown by [translateRequest] when an OpenAI multimodal content block
+     * cannot be converted to a Gemini `inlineData` part. The dispatcher
+     * (ProxyServerManager) catches this specifically and renders a 400 with
+     * the matching OpenAI-shaped error envelope, so clients see a clean
+     * "your image_url was bad" reply instead of a generic gateway 500.
+     */
+    class MultimodalParseException(
+        val httpStatus: Int,
+        val errType: String,
+        msg: String
+    ) : RuntimeException(msg)
+
+    /**
+     * Parses a `data:<mime>;base64,<base64>` URI into `(mime, base64Data)`.
+     * Returns null if the URI is not a `data:` URI at all.
+     *
+     * For cloud Gemini we forward the raw base64 unchanged inside an
+     * `inlineData` part. We do not attempt to decode-and-re-encode the bytes;
+     * the upstream just needs the bytes in base64 with a mime type.
+     *
+     * Per plan.md §11 PR #7, only `data:` URIs are supported. `http(s)://`
+     * URLs are explicitly rejected upstream of this helper to avoid SSRF and
+     * to keep the gateway free of any outbound dependency on arbitrary
+     * remote hosts.
+     */
+    internal fun parseDataUri(uri: String): Pair<String, String>? {
+        if (!uri.startsWith("data:")) return null
+        val comma = uri.indexOf(',')
+        if (comma < 0) {
+            throw MultimodalParseException(
+                httpStatus = 400,
+                errType = "invalid_request_error",
+                msg = "Malformed data URI: missing comma separator."
+            )
+        }
+        val header = uri.substring(5, comma)
+        val data = uri.substring(comma + 1)
+        if (!header.contains(";base64")) {
+            throw MultimodalParseException(
+                httpStatus = 400,
+                errType = "invalid_request_error",
+                msg = "Only base64-encoded data URIs are supported by this gateway. " +
+                        "Got header: '${header.take(60)}'"
+            )
+        }
+        val mime = header.substringBefore(";").ifEmpty { "application/octet-stream" }
+        return mime to data
+    }
+
+    /**
+     * Builds the Gemini `parts` array for a single OpenAI message's content.
+     * Handles three OpenAI content shapes:
+     *   - String       -> single text part
+     *   - JSONArray of blocks -> mixed text + inlineData parts
+     *   - anything else -> empty
+     *
+     * Recognized block types (plan.md §11 PR #7):
+     *   - `{ type: "text", text: "..." }` -> `{ "text": "..." }`
+     *   - `{ type: "image_url", image_url: { url: "data:image/...;base64,..." } }`
+     *     -> `{ "inlineData": { "mimeType": "image/...", "data": "..." } }`
+     *   - `{ type: "input_audio", input_audio: { format: "mp3"|"wav", data: "..." } }`
+     *     -> `{ "inlineData": { "mimeType": "audio/mpeg"|"audio/wav", "data": "..." } }`
+     *
+     * Unknown block types are silently skipped (forward-compat with future
+     * OpenAI block types). Malformed data URIs and `http(s)://` URLs throw
+     * [MultimodalParseException] with HTTP 400 metadata.
+     */
+    internal fun buildPartsFromContent(content: Any?): JSONArray {
+        val parts = JSONArray()
+        when (content) {
+            is String -> parts.put(JSONObject().put("text", content))
+            is JSONArray -> {
+                for (i in 0 until content.length()) {
+                    val item = content.optJSONObject(i) ?: continue
+                    when (item.optString("type")) {
+                        "text" -> {
+                            val t = item.optString("text", "")
+                            if (t.isNotEmpty()) parts.put(JSONObject().put("text", t))
+                        }
+                        "image_url" -> {
+                            val imgObj = item.optJSONObject("image_url")
+                                ?: throw MultimodalParseException(
+                                    400, "invalid_request_error",
+                                    "image_url block missing 'image_url' object."
+                                )
+                            val url = imgObj.optString("url", "")
+                            if (url.isEmpty()) {
+                                throw MultimodalParseException(
+                                    400, "invalid_request_error",
+                                    "image_url.url is empty."
+                                )
+                            }
+                            if (url.startsWith("http://") || url.startsWith("https://")) {
+                                throw MultimodalParseException(
+                                    400, "invalid_request_error",
+                                    "image_url.url must be a data: URI; this gateway does not " +
+                                            "fetch http(s):// images. Inline the image as " +
+                                            "data:image/<type>;base64,<base64> instead."
+                                )
+                            }
+                            val (mime, data) = parseDataUri(url)
+                                ?: throw MultimodalParseException(
+                                    400, "invalid_request_error",
+                                    "image_url.url is not a recognized data URI: '${url.take(40)}'"
+                                )
+                            parts.put(
+                                JSONObject().put(
+                                    "inlineData",
+                                    JSONObject()
+                                        .put("mimeType", mime)
+                                        .put("data", data)
+                                )
+                            )
+                        }
+                        "input_audio" -> {
+                            val audObj = item.optJSONObject("input_audio")
+                                ?: throw MultimodalParseException(
+                                    400, "invalid_request_error",
+                                    "input_audio block missing 'input_audio' object."
+                                )
+                            val data = audObj.optString("data", "")
+                            if (data.isEmpty()) {
+                                throw MultimodalParseException(
+                                    400, "invalid_request_error",
+                                    "input_audio.data is empty."
+                                )
+                            }
+                            val format = audObj.optString("format", "wav").lowercase()
+                            val mime = when (format) {
+                                "mp3" -> "audio/mpeg"
+                                "wav" -> "audio/wav"
+                                "ogg" -> "audio/ogg"
+                                "flac" -> "audio/flac"
+                                else -> "audio/$format"
+                            }
+                            parts.put(
+                                JSONObject().put(
+                                    "inlineData",
+                                    JSONObject()
+                                        .put("mimeType", mime)
+                                        .put("data", data)
+                                )
+                            )
+                        }
+                        else -> {
+                            // Unknown block type — skip rather than fail, so
+                            // forward-compatible with future OpenAI types.
+                        }
+                    }
+                }
+            }
+            else -> { /* null/missing content -> empty parts */ }
+        }
+        return parts
+    }
 
     /**
      * Translates an OpenAI Chat Completion request JSON into a Google Gemini REST request JSON.
@@ -36,33 +193,43 @@ object OpenAiToGeminiTranslator {
             val msg = messages.getJSONObject(i)
             val role = msg.optString("role", "user")
 
-            var contentText = ""
-            val contentObj = msg.opt("content")
-            if (contentObj is String) {
-                contentText = contentObj
-            } else if (contentObj is JSONArray) {
-                val sb = StringBuilder()
-                for (j in 0 until contentObj.length()) {
-                    val subObj = contentObj.optJSONObject(j)
-                    if (subObj != null) {
-                        if (subObj.optString("type") == "text") {
-                            sb.append(subObj.optString("text"))
+            // System messages are extracted separately and joined; multimodal
+            // blocks are not meaningful inside a system instruction (Gemini's
+            // systemInstruction takes a parts array but the typical use is
+            // pure text), so we flatten to text only here.
+            if (role == "system") {
+                val sysContent = msg.opt("content")
+                val sysText = when (sysContent) {
+                    is String -> sysContent
+                    is JSONArray -> {
+                        val sb = StringBuilder()
+                        for (j in 0 until sysContent.length()) {
+                            val sub = sysContent.optJSONObject(j) ?: continue
+                            if (sub.optString("type") == "text") {
+                                sb.append(sub.optString("text"))
+                            }
                         }
+                        sb.toString()
+                    }
+                    else -> ""
+                }
+                if (sysText.isNotEmpty()) {
+                    systemInstructionText = if (systemInstructionText.isEmpty()) {
+                        sysText
+                    } else {
+                        "$systemInstructionText\n\n$sysText"
                     }
                 }
-                contentText = sb.toString()
-            }
-
-            if (role == "system") {
-                systemInstructionText = contentText
                 continue
             }
 
             // Map OpenAI assistant role to Gemini model role
             val geminiRole = if (role == "assistant") "model" else "user"
 
-            val partObj = JSONObject().put("text", contentText)
-            val partsArr = JSONArray().put(partObj)
+            val partsArr = buildPartsFromContent(msg.opt("content"))
+
+            // Skip empty messages — Gemini rejects content entries with no parts.
+            if (partsArr.length() == 0) continue
 
             val contentItem = JSONObject()
                 .put("role", geminiRole)
@@ -175,7 +342,20 @@ object OpenAiToGeminiTranslator {
         val maxTokens: Int,
         val temperature: Float,
         val topK: Int,
-        val topP: Float
+        val topP: Float,
+        /**
+         * If the OpenAI request contained any multimodal content blocks
+         * (`image_url`, `input_audio`, etc.) this is set to a human-readable
+         * reason. The dispatcher must check this and short-circuit with a 400
+         * `multimodal_not_supported` rather than silently dropping the
+         * blocks and producing a text-only reply that pretends nothing was
+         * stripped.
+         *
+         * The local engine ([LiteRtLmEngine]) accepts only text turns today
+         * (`HistoryTurn(role, text)`); when that changes, this field becomes
+         * the natural extension point for plumbing image/audio bytes through.
+         */
+        val rejectedMultimodalReason: String? = null
     )
 
     /**
@@ -188,6 +368,13 @@ object OpenAiToGeminiTranslator {
      *  - The last `user` message is split out as the live prompt for `generate(...)`.
      *  - `max_tokens` / `max_completion_tokens` / `temperature` / `top_p` / `top_k`
      *    are extracted with sensible defaults.
+     *
+     * Multimodal handling (plan.md §11 PR #7): if any message contains a
+     * non-text content block (`image_url`, `input_audio`, etc.), the returned
+     * [LocalEngineRequest.rejectedMultimodalReason] is set with a description
+     * of what was found. The dispatcher must short-circuit with a 400 rather
+     * than route to the text-only engine — silent stripping would lie to the
+     * caller about what the model actually saw.
      */
     fun extractLocalEngineRequest(openAiJson: String): LocalEngineRequest {
         val obj = JSONObject(openAiJson)
@@ -196,6 +383,7 @@ object OpenAiToGeminiTranslator {
         val systemPieces = mutableListOf<String>()
         val turns = mutableListOf<LiteRtLmEngine.HistoryTurn>()
         var lastUserText = ""
+        var multimodalReason: String? = null
 
         // First pass: collect system + history (all turns except the trailing user one).
         // We need to know which user message is the LAST one to peel it off.
@@ -206,7 +394,12 @@ object OpenAiToGeminiTranslator {
         for (i in 0 until msgs.length()) {
             val msg = msgs.getJSONObject(i)
             val role = msg.optString("role", "user")
-            val text = extractTextFromContent(msg.opt("content"))
+            val (text, multimodalKind) = extractTextAndDetectMultimodal(msg.opt("content"))
+            if (multimodalKind != null && multimodalReason == null) {
+                multimodalReason = "Local LiteRT-LM engine does not yet accept '$multimodalKind' " +
+                        "content blocks. Use a cloud Gemini model id, or remove the multimodal " +
+                        "content and retry."
+            }
 
             when (role) {
                 "system" -> if (text.isNotEmpty()) systemPieces.add(text)
@@ -241,7 +434,8 @@ object OpenAiToGeminiTranslator {
             maxTokens = maxTokens,
             temperature = temperature,
             topK = topK,
-            topP = topP
+            topP = topP,
+            rejectedMultimodalReason = multimodalReason
         )
     }
 
@@ -416,20 +610,36 @@ object OpenAiToGeminiTranslator {
     // Helpers
     // ------------------------------------------------------------------------
 
-    private fun extractTextFromContent(content: Any?): String {
+    /**
+     * Extracts plain text from an OpenAI message's `content` field, and
+     * separately reports whether any non-text block was present (so the caller
+     * can refuse rather than silently strip).
+     *
+     * Returns `(plainText, multimodalKind)` where:
+     *   - `plainText` is the concatenation of all `type: "text"` blocks (or
+     *     the whole content if it's a plain string).
+     *   - `multimodalKind` is the type-string of the first non-text block
+     *     encountered (e.g. `"image_url"`, `"input_audio"`), or null if every
+     *     block was a text block.
+     */
+    private fun extractTextAndDetectMultimodal(content: Any?): Pair<String, String?> {
         return when (content) {
-            is String -> content
+            is String -> content to null
             is JSONArray -> {
                 val sb = StringBuilder()
+                var firstNonText: String? = null
                 for (i in 0 until content.length()) {
                     val item = content.optJSONObject(i) ?: continue
-                    if (item.optString("type") == "text") {
+                    val type = item.optString("type")
+                    if (type == "text") {
                         sb.append(item.optString("text"))
+                    } else if (type.isNotEmpty() && firstNonText == null) {
+                        firstNonText = type
                     }
                 }
-                sb.toString()
+                sb.toString() to firstNonText
             }
-            else -> ""
+            else -> "" to null
         }
     }
 }
