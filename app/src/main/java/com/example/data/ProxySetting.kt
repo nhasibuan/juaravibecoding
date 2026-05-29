@@ -9,6 +9,14 @@ data class ProxySetting(
     val port: Int = 8080,
     val proxyApiKey: String = "",
     val activeModelId: String = "litert-community/gemma-4-E2B-it-litert-lm",
+    /**
+     * Informational/UI default only as of plan.md §11 PR #8. Routing no
+     * longer consults this field — each registered model picks its own
+     * runtime via [LocalModelInfo.runtimeType], and any registered id is
+     * dispatchable so long as its prerequisite resource (cloud key or
+     * on-disk weights) is present. Kept on the entity so the UI can
+     * remember the user's preferred default selection across sessions.
+     */
     val targetProvider: String = "CLOUD_GEMINI", // "CLOUD_GEMINI" or "LOCAL_VAL"
     val geminiApiKey: String = "",
     /**
