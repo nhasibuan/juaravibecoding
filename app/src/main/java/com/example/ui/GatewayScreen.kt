@@ -62,6 +62,7 @@ fun GatewayScreen(
     var showApiKey by remember { mutableStateOf(false) }
     var geminiApiKeyValue by remember { mutableStateOf("") }
     var showGeminiApiKey by remember { mutableStateOf(false) }
+    var enableNpuBackend by remember { mutableStateOf(false) }
 
     // Sync input states when configuration loads up from DB
     LaunchedEffect(settings) {
@@ -69,6 +70,7 @@ fun GatewayScreen(
             portValue = it.port.toString()
             apiKeyValue = it.proxyApiKey
             geminiApiKeyValue = it.geminiApiKey
+            enableNpuBackend = it.enableNpuBackend
         }
     }
 
@@ -437,6 +439,41 @@ fun GatewayScreen(
                                 .testTag("gemini_api_key_settings_input")
                         )
 
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        // NPU backend opt-in toggle (advanced)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
+                                Text(
+                                    text = "Enable NPU backend (advanced)",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White
+                                )
+                                Text(
+                                    text = "Only flip on if your device ships the LiteRT-LM NPU plug-in. " +
+                                            "Default OFF; NPU-listed accelerators silently downgrade to CPU.",
+                                    fontSize = 10.sp,
+                                    color = Color.LightGray.copy(alpha = 0.7f)
+                                )
+                            }
+                            Switch(
+                                checked = enableNpuBackend,
+                                onCheckedChange = { enableNpuBackend = it },
+                                modifier = Modifier.testTag("npu_opt_in_switch"),
+                                colors = SwitchDefaults.colors(
+                                    checkedThumbColor = Color.White,
+                                    checkedTrackColor = accentCyan,
+                                    uncheckedThumbColor = Color.LightGray,
+                                    uncheckedTrackColor = Color.DarkGray
+                                )
+                            )
+                        }
+
                         Spacer(modifier = Modifier.height(16.dp))
 
                         Button(
@@ -446,7 +483,8 @@ fun GatewayScreen(
                                     apiKeyText = apiKeyValue,
                                     activeModelId = settings?.activeModelId ?: "litert-community/gemma-4-E2B-it-litert-lm",
                                     provider = settings?.targetProvider ?: "CLOUD_GEMINI",
-                                    geminiApiKeyText = geminiApiKeyValue
+                                    geminiApiKeyText = geminiApiKeyValue,
+                                    enableNpuBackend = enableNpuBackend
                                 )
                                 Toast.makeText(context, "Proxy parameters updated!", Toast.LENGTH_SHORT).show()
                             },
