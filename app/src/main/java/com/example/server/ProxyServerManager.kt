@@ -409,8 +409,11 @@ class ProxyServerManager(
                         //
                         // The registry is now the single source of truth (see
                         // plan.md §5.4). Every id we list here is guaranteed to
-                        // route successfully under the current targetProvider —
-                        // no advertised id is unreachable.
+                        // route successfully when its prerequisite resource is
+                        // present (cloud key for CLOUD entries, on-disk weights
+                        // for LITERT_LM entries). Per-model runtime selection
+                        // (plan.md §11 PR #8) means there is no global provider
+                        // gate to honor here.
                         if (isModelsEndpoint) {
                             val cloudKeyPresent = run {
                                 val deviceKey = settings?.geminiApiKey ?: ""
@@ -556,8 +559,11 @@ class ProxyServerManager(
 
                         // Resolve the request to a concrete RoutedModel using
                         // ModelsRegistry as the single source of truth. The router
-                        // does all the validation: unknown id, provider mismatch,
-                        // missing weights, missing key. See ModelRouter.kt.
+                        // does all the validation: unknown id, missing weights,
+                        // missing key. Per-model runtime selection (plan.md §11
+                        // PR #8) means there is no global provider gate — each
+                        // registered id picks its own runtime via RuntimeType.
+                        // See ModelRouter.kt.
                         val resolvedSettings = settings ?: ProxySetting()
                         val deviceGeminiKey = settings?.geminiApiKey ?: ""
                         val effectiveGeminiKey = if (deviceGeminiKey.isNotEmpty()) {
@@ -570,7 +576,6 @@ class ProxyServerManager(
 
                         val routeResult = ModelRouter.resolve(
                             requestedId = requestModel,
-                            settings = resolvedSettings,
                             weightsAvailable = { m ->
                                 val f = m.getResolvedTargetFile(context)
                                 f.exists() && f.length() > 0
