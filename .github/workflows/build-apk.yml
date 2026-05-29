@@ -1,31 +1,40 @@
 name: Build APKs
 
-# Builds a debug APK for `main` and for every feature branch, then uploads
-# each as a separate downloadable artifact. One workflow lives on `main` and
-# checks out each branch by ref via a matrix, so the feature branches do not
-# need to carry this file themselves.
+# Builds a debug APK for `main` and for every feature branch, then attaches
+# all of them to a single tagged GitHub Release (permanent download URLs)
+# in addition to per-branch run artifacts.
+#
+# A single workflow on `main` uses a matrix to check out each branch by ref,
+# so the feature branches do not need to carry this file themselves.
 #
 # How to get the APKs:
-#   - Run manually: Actions tab -> "Build APKs" -> "Run workflow".
-#     (or it runs automatically on every push to main)
-#   - Open the finished run -> "Artifacts" section -> download
-#     "apk-<branch>" (each contains app-debug-<branch>.apk).
+#   - Run manually: Actions tab -> "Build APKs" -> "Run workflow"
+#     (also runs automatically on every push to main).
+#   - Permanent: Releases page -> the "AI Proxy Gateway APKs - build #<n>"
+#     release -> download app-debug-<branch>.apk from the assets list.
+#   - Transient backup: the run's Artifacts section (apk-<branch>, 30 days).
 #
 # Repo-specific build prerequisites (handled in the steps below):
-#   - No Gradle wrapper is committed, so we provision Gradle via
+#   - No Gradle wrapper is committed, so Gradle is provisioned via
 #     gradle/actions/setup-gradle (gradle-version pinned below).
 #   - AGP 9.1.1 requires JDK 17 to run and Gradle 9.x.
-#   - The debug signingConfig points at ${rootDir}/debug.keystore, which is
-#     committed only as base64 (debug.keystore.base64) — we decode it.
-#   - The `secrets` Gradle plugin reads .env and falls back to .env.example.
-#     .env.example ships a GEMINI_API_KEY placeholder, so a debug build needs
-#     no real secret; we copy it to .env if .env is absent.
+#   - The debug signingConfig points at ${rootDir}/debug.keystore, committed
+#     only as base64 (debug.keystore.base64) -> we decode it.
+#   - The `secrets` Gradle plugin reads .env and falls back to .env.example
+#     (ships a GEMINI_API_KEY placeholder), so a debug build needs no real
+#     secret; we copy it to .env if .env is absent.
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Git tag for the APK release (blank = apks-build-<run#>)"
+        required: false
+        default: ""
   push:
     branches: [ main ]
 
+# Read-only by default; only the release job is granted contents: write.
 permissions:
   contents: read
 
@@ -38,21 +47,21 @@ jobs:
     name: Build (${{ matrix.branch }})
     runs-on: ubuntu-latest
     strategy:
-      # Don't let one branch's failure cancel the others — we want every
-      # buildable branch to still produce its APK.
+      # One branch failing must not cancel the rest — we still want every
+      # buildable branch to produce its APK.
       fail-fast: false
       matrix:
         branch:
           - main
-          # PR #1–#3 (chain to main)
+          # PR #1-#3 (chain to main)
           - litert-lm-real-inference
           - routing-correctness
           - housekeeping-and-minor-features
-          # PR #4–#6 (stacked)
+          # PR #4-#6 (stacked)
           - feat-npu-opt-in
           - feat-litertlm-kv-cache-reuse
           - feat-sse-streaming
-          # PR #7–#12 (parallel, branch off feat-sse-streaming)
+          # PR #7-#12 (parallel, branch off feat-sse-streaming)
           - feat-multimodal-data-uris-v2
           - feat-per-model-provider
           - feat-tools-501-gate
@@ -111,3 +120,63 @@ jobs:
           path: out/app-debug-${{ matrix.branch }}.apk
           if-no-files-found: error
           retention-days: 30
+
+  release:
+    name: Attach all APKs to a GitHub Release
+    needs: build
+    # Run even if some matrix legs failed, so we still publish whatever built.
+    # Don't run if the whole workflow was cancelled.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all APK artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: apk-*
+          merge-multiple: true
+
+      - name: List downloaded APKs
+        run: ls -la dist/ || echo "(no APKs were produced)"
+
+      - name: Resolve release tag
+        id: tag
+        run: |
+          if [ -n "${{ github.event.inputs.release_tag }}" ]; then
+            echo "tag=${{ github.event.inputs.release_tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=apks-build-${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build release notes
+        run: |
+          {
+            echo "Debug APKs built from \`main\` and all feature branches."
+            echo ""
+            echo "- Commit: \`${{ github.sha }}\`"
+            echo "- Workflow run: #${{ github.run_number }}"
+            echo ""
+            echo "## APKs in this release"
+            shopt -s nullglob
+            count=0
+            for f in dist/*.apk; do
+              echo "- \`$(basename "$f")\` ($(du -h "$f" | cut -f1))"
+              count=$((count+1))
+            done
+            if [ "$count" -eq 0 ]; then
+              echo "_No APKs were produced — all matrix builds failed. Check the build jobs._"
+            fi
+          } > release-notes.md
+          echo "---- release-notes.md ----"
+          cat release-notes.md
+
+      - name: Create / update Release with all APKs
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: "AI Proxy Gateway APKs - build #${{ github.run_number }}"
+          body_path: release-notes.md
+          files: dist/*.apk
+          fail_on_unmatched_files: false
