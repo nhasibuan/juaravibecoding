@@ -1,0 +1,113 @@
+name: Build APKs
+
+# Builds a debug APK for `main` and for every feature branch, then uploads
+# each as a separate downloadable artifact. One workflow lives on `main` and
+# checks out each branch by ref via a matrix, so the feature branches do not
+# need to carry this file themselves.
+#
+# How to get the APKs:
+#   - Run manually: Actions tab -> "Build APKs" -> "Run workflow".
+#     (or it runs automatically on every push to main)
+#   - Open the finished run -> "Artifacts" section -> download
+#     "apk-<branch>" (each contains app-debug-<branch>.apk).
+#
+# Repo-specific build prerequisites (handled in the steps below):
+#   - No Gradle wrapper is committed, so we provision Gradle via
+#     gradle/actions/setup-gradle (gradle-version pinned below).
+#   - AGP 9.1.1 requires JDK 17 to run and Gradle 9.x.
+#   - The debug signingConfig points at ${rootDir}/debug.keystore, which is
+#     committed only as base64 (debug.keystore.base64) — we decode it.
+#   - The `secrets` Gradle plugin reads .env and falls back to .env.example.
+#     .env.example ships a GEMINI_API_KEY placeholder, so a debug build needs
+#     no real secret; we copy it to .env if .env is absent.
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-apk-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build (${{ matrix.branch }})
+    runs-on: ubuntu-latest
+    strategy:
+      # Don't let one branch's failure cancel the others — we want every
+      # buildable branch to still produce its APK.
+      fail-fast: false
+      matrix:
+        branch:
+          - main
+          # PR #1–#3 (chain to main)
+          - litert-lm-real-inference
+          - routing-correctness
+          - housekeeping-and-minor-features
+          # PR #4–#6 (stacked)
+          - feat-npu-opt-in
+          - feat-litertlm-kv-cache-reuse
+          - feat-sse-streaming
+          # PR #7–#12 (parallel, branch off feat-sse-streaming)
+          - feat-multimodal-data-uris-v2
+          - feat-per-model-provider
+          - feat-tools-501-gate
+          - feat-aicore-scaffold
+          - feat-streaming-wiring
+          - feat-applicationid-trim
+
+    steps:
+      - name: Checkout ${{ matrix.branch }}
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.branch }}
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          # AGP 9.1.1 requires Gradle 9.x. Adjust here if CI reports an
+          # incompatible-version error on the first run.
+          gradle-version: '9.1.0'
+
+      - name: Prepare .env (fall back to committed .env.example)
+        run: |
+          if [ ! -f .env ]; then
+            cp .env.example .env
+            echo "Copied .env.example -> .env"
+          fi
+
+      - name: Decode debug keystore
+        run: |
+          base64 -d debug.keystore.base64 > debug.keystore
+          echo "Decoded debug.keystore ($(wc -c < debug.keystore) bytes)"
+
+      - name: Build debug APK
+        run: gradle :app:assembleDebug --no-daemon --stacktrace
+
+      - name: Stage APK with branch-tagged name
+        run: |
+          mkdir -p out
+          cp app/build/outputs/apk/debug/app-debug.apk \
+             "out/app-debug-${{ matrix.branch }}.apk"
+          ls -la out/
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk-${{ matrix.branch }}
+          path: out/app-debug-${{ matrix.branch }}.apk
+          if-no-files-found: error
+          retention-days: 30
