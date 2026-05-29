@@ -489,11 +489,17 @@ class ProxyServerManager(
                             ""
                         }
 
-                        // Parse requested model out of the payload
+                        // Parse requested model and `stream` flag out of the
+                        // payload. We honor `stream: true` only on the local
+                        // LiteRT-LM path today; cloud streaming would need
+                        // Gemini's streamGenerateContent endpoint and is
+                        // deferred to a future PR.
+                        var isStreaming = false
                         try {
                             if (rawBody.trim().isNotEmpty()) {
                                 val jsonObj = JSONObject(rawBody)
                                 requestModel = jsonObj.optString("model", "unknown-model")
+                                isStreaming = jsonObj.optBoolean("stream", false)
                             }
                         } catch (e: Exception) {
                             Log.e("ProxyServerManager", "Failed to parse requested input JSON model ID", e)
@@ -534,6 +540,42 @@ class ProxyServerManager(
                         } else {
                             when (val routed = routeResult.getOrNull()!!) {
                                 is RoutedModel.Cloud -> {
+                                    // Cloud streaming via Gemini's
+                                    // `streamGenerateContent` endpoint is
+                                    // a future PR. For now, refuse
+                                    // `stream:true` on cloud routes with a
+                                    // clean 501 — the LITERT_LM branch
+                                    // below honors `stream:true` natively.
+                                    if (isStreaming) {
+                                        httpStatus = 501
+                                        outputResponseText = HttpErrors.jsonError(
+                                            message = "Streaming for cloud Gemini models is not yet implemented " +
+                                                    "by this gateway. Drop `stream:true` from the request, or use " +
+                                                    "an on-device LiteRT-LM model id (which does support streaming).",
+                                            type = "not_implemented",
+                                            code = 501
+                                        )
+                                        sendJsonResponse(outputStream, 501, outputResponseText)
+                                        val duration = System.currentTimeMillis() - startTime
+                                        try {
+                                            repository.insertLog(
+                                                GatewayLog(
+                                                    method = method,
+                                                    path = path,
+                                                    requestModel = requestModel,
+                                                    clientIp = clientIp,
+                                                    status = 501,
+                                                    durationMs = duration,
+                                                    responsePreview = "Rejected: stream:true on cloud route (501 not_implemented)",
+                                                    isAuthorized = authorized
+                                                )
+                                            )
+                                        } catch (dbEx: Throwable) {
+                                            Log.e("ProxyServerManager", "DB logging failed for cloud-stream 501 reject", dbEx)
+                                        }
+                                        return@withContext
+                                    }
+
                                     // Cloud Gemini: cloudUpstreamId is set by the
                                     // registry for every CLOUD entry, so the old
                                     // substring-`pro` heuristic is gone. The
@@ -594,10 +636,91 @@ class ProxyServerManager(
                                         npuOptIn = resolvedSettings.enableNpuBackend
                                     )
                                     if (loadErr != null) {
+                                        // Engine-load failures come back as
+                                        // JSON 4xx/5xx whether or not the
+                                        // client asked to stream. The client
+                                        // hasn't seen any SSE bytes yet, so
+                                        // a clean JSON envelope is the right
+                                        // wire shape — not a half-opened SSE
+                                        // stream that immediately errors.
                                         val (code, body) = OpenAiToGeminiTranslator.wrapLocalError(loadErr, requestModel)
                                         httpStatus = code
                                         outputResponseText = body
                                         sendJsonResponse(outputStream, code, body)
+                                    } else if (isStreaming) {
+                                        // Real SSE streaming path. Wires
+                                        // `LiteRtLmEngine.generateStreaming`
+                                        // (added in PR #6) into the OpenAI
+                                        // chat.completion.chunk frame format
+                                        // built by the translator helpers.
+                                        // Once headers go out the door, all
+                                        // subsequent failures must surface
+                                        // as in-band SSE error frames + DONE
+                                        // sentinel — we cannot rewind the
+                                        // socket to send a JSON 5xx.
+                                        sendSseHeaders(outputStream)
+                                        val (streamId, createdSec) = OpenAiToGeminiTranslator.newStreamSession()
+                                        writeSseFrame(
+                                            outputStream,
+                                            OpenAiToGeminiTranslator.streamingFirstDelta(
+                                                streamId, createdSec, requestModel
+                                            )
+                                        )
+
+                                        val streamResult = LiteRtLmEngine.generateStreaming(
+                                            userText = req.latestUserText,
+                                            onDelta = { deltaText, _ ->
+                                                // Each accumulated-message
+                                                // turn from the SDK arrives
+                                                // as a delta from the prior
+                                                // call (the engine slices
+                                                // it for us via lastSentLength).
+                                                writeSseFrame(
+                                                    outputStream,
+                                                    OpenAiToGeminiTranslator.streamingContentDelta(
+                                                        streamId, createdSec, requestModel, deltaText
+                                                    )
+                                                )
+                                            }
+                                        )
+
+                                        when (streamResult) {
+                                            is LiteRtLmEngine.Result.Ok -> {
+                                                writeSseFrame(
+                                                    outputStream,
+                                                    OpenAiToGeminiTranslator.streamingFinish(
+                                                        streamId, createdSec, requestModel, streamResult
+                                                    )
+                                                )
+                                                writeSseDone(outputStream)
+                                                httpStatus = 200
+                                                // Gateway-log preview:
+                                                // surface the accumulated
+                                                // text. The "Raw: ..." JSON
+                                                // fallback in the log block
+                                                // below picks this up.
+                                                outputResponseText = streamResult.text
+                                            }
+                                            is LiteRtLmEngine.Result.Err -> {
+                                                writeSseFrame(
+                                                    outputStream,
+                                                    OpenAiToGeminiTranslator.streamingError(
+                                                        streamResult.message,
+                                                        streamResult.type,
+                                                        requestModel
+                                                    )
+                                                )
+                                                writeSseDone(outputStream)
+                                                // Map the engine error type
+                                                // to the same status we'd
+                                                // have used non-streaming,
+                                                // for the gateway log only —
+                                                // the wire is already SSE.
+                                                val (code, _) = OpenAiToGeminiTranslator.wrapLocalError(streamResult, requestModel)
+                                                httpStatus = code
+                                                outputResponseText = "stream_err: ${streamResult.type}: ${streamResult.message}"
+                                            }
+                                        }
                                     } else {
                                         when (val r = LiteRtLmEngine.generate(req.latestUserText)) {
                                             is LiteRtLmEngine.Result.Ok -> {
