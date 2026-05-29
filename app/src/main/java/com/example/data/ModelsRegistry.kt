@@ -1,12 +1,5 @@
 package com.example.data
 
-// LiteRT-LM SDK API structures for default model configuration.
-// (Vestigial — kept to avoid touching unrelated callers; tracked for removal.)
-data class EngineConfig(
-    val modelPath: String,
-    val backend: Any? = null
-)
-
 /**
  * The runtime that a [LocalModelInfo] dispatches to. The router (`ModelRouter`)
  * uses this to decide which subsystem services a request, and the `/v1/models`
@@ -109,13 +102,6 @@ data class LocalModelInfo(
 }
 
 object ModelsRegistry {
-    // Default LiteRT-LM Model Path on Android Storage:
-    // Resolves to: \Internal shared storage\Android\data\com.google.ai.edge.gallery\files\Gemma_4_E2B_it\20260325\gemma4_2b_v09_obfus_fix_all_modalities_thinking.litertlm
-    // on user devices (e.g., ADVAN SKETSA 3 via MTP USB connection).
-    const val DEFAULT_LITERT_MODEL_PATH = "/sdcard/Android/data/com.google.ai.edge.gallery/files/Gemma_4_E2B_it/20260325/gemma4_2b_v09_obfus_fix_all_modalities_thinking.litertlm"
-
-    // Default configuration for the LiteRT-LM engine
-    val defaultEngineConfig = EngineConfig(modelPath = DEFAULT_LITERT_MODEL_PATH)
 
     val allowedModels = listOf(
         // ----- Cloud Gemini (CLOUD) -----------------------------------------

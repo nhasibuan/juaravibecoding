@@ -409,8 +409,11 @@ class ProxyServerManager(
                         //
                         // The registry is now the single source of truth (see
                         // plan.md §5.4). Every id we list here is guaranteed to
-                        // route successfully under the current targetProvider —
-                        // no advertised id is unreachable.
+                        // route successfully when its prerequisite resource is
+                        // present (cloud key for CLOUD entries, on-disk weights
+                        // for LITERT_LM entries). Per-model runtime selection
+                        // (plan.md §11 PR #8) means there is no global provider
+                        // gate to honor here.
                         if (isModelsEndpoint) {
                             val cloudKeyPresent = run {
                                 val deviceKey = settings?.geminiApiKey ?: ""
@@ -489,20 +492,78 @@ class ProxyServerManager(
                             ""
                         }
 
-                        // Parse requested model out of the payload
+                        // Parse the requested model id plus two request flags:
+                        //  - `tools` / legacy `functions`: function-calling is not
+                        //    implemented yet (plan.md §11 PR #9). A non-empty list
+                        //    triggers an early 501 below; `tools: []` is a no-op.
+                        //  - `stream: true`: honored on the local LiteRT-LM path
+                        //    (plan.md §11 PR #6/#11); cloud streaming would need
+                        //    Gemini's streamGenerateContent endpoint and is a
+                        //    future PR.
+                        var hasToolsField = false
+                        var isStreaming = false
                         try {
                             if (rawBody.trim().isNotEmpty()) {
                                 val jsonObj = JSONObject(rawBody)
                                 requestModel = jsonObj.optString("model", "unknown-model")
+                                isStreaming = jsonObj.optBoolean("stream", false)
+                                val tools = jsonObj.opt("tools")
+                                if (tools is org.json.JSONArray && tools.length() > 0) {
+                                    hasToolsField = true
+                                }
+                                val legacyFunctions = jsonObj.opt("functions")
+                                if (legacyFunctions is org.json.JSONArray && legacyFunctions.length() > 0) {
+                                    hasToolsField = true
+                                }
                             }
                         } catch (e: Exception) {
                             Log.e("ProxyServerManager", "Failed to parse requested input JSON model ID", e)
                         }
 
+                        // Function calling / tool_calls round-trips are not yet
+                        // implemented (plan.md §11 PR #9). Reject early with
+                        // a 501 + `not_implemented` so clients can fall back
+                        // to a tools-free turn rather than have the gateway
+                        // silently drop the tools array on the floor and
+                        // produce a normal text reply that ignores the
+                        // requested function schema.
+                        if (hasToolsField) {
+                            httpStatus = 501
+                            outputResponseText = HttpErrors.jsonError(
+                                message = "Function calling / tool_calls is not yet implemented by this gateway. " +
+                                        "Remove the `tools` (or legacy `functions`) field from the request and retry, " +
+                                        "or use a model and gateway that supports it.",
+                                type = "not_implemented",
+                                code = 501
+                            )
+                            sendJsonResponse(outputStream, 501, outputResponseText)
+                            val duration = System.currentTimeMillis() - startTime
+                            try {
+                                repository.insertLog(
+                                    GatewayLog(
+                                        method = method,
+                                        path = path,
+                                        requestModel = requestModel,
+                                        clientIp = clientIp,
+                                        status = 501,
+                                        durationMs = duration,
+                                        responsePreview = "Rejected: tools field present (501 not_implemented)",
+                                        isAuthorized = authorized
+                                    )
+                                )
+                            } catch (dbEx: Throwable) {
+                                Log.e("ProxyServerManager", "DB logging failed for tools 501 reject", dbEx)
+                            }
+                            return@withContext
+                        }
+
                         // Resolve the request to a concrete RoutedModel using
                         // ModelsRegistry as the single source of truth. The router
-                        // does all the validation: unknown id, provider mismatch,
-                        // missing weights, missing key. See ModelRouter.kt.
+                        // does all the validation: unknown id, missing weights,
+                        // missing key. Per-model runtime selection (plan.md §11
+                        // PR #8) means there is no global provider gate — each
+                        // registered id picks its own runtime via RuntimeType.
+                        // See ModelRouter.kt.
                         val resolvedSettings = settings ?: ProxySetting()
                         val deviceGeminiKey = settings?.geminiApiKey ?: ""
                         val effectiveGeminiKey = if (deviceGeminiKey.isNotEmpty()) {
@@ -515,7 +576,6 @@ class ProxyServerManager(
 
                         val routeResult = ModelRouter.resolve(
                             requestedId = requestModel,
-                            settings = resolvedSettings,
                             weightsAvailable = { m ->
                                 val f = m.getResolvedTargetFile(context)
                                 f.exists() && f.length() > 0
@@ -534,13 +594,67 @@ class ProxyServerManager(
                         } else {
                             when (val routed = routeResult.getOrNull()!!) {
                                 is RoutedModel.Cloud -> {
+                                    // Cloud streaming via Gemini's
+                                    // `streamGenerateContent` endpoint is
+                                    // a future PR. For now, refuse
+                                    // `stream:true` on cloud routes with a
+                                    // clean 501 — the LITERT_LM branch
+                                    // below honors `stream:true` natively.
+                                    if (isStreaming) {
+                                        httpStatus = 501
+                                        outputResponseText = HttpErrors.jsonError(
+                                            message = "Streaming for cloud Gemini models is not yet implemented " +
+                                                    "by this gateway. Drop `stream:true` from the request, or use " +
+                                                    "an on-device LiteRT-LM model id (which does support streaming).",
+                                            type = "not_implemented",
+                                            code = 501
+                                        )
+                                        sendJsonResponse(outputStream, 501, outputResponseText)
+                                        val duration = System.currentTimeMillis() - startTime
+                                        try {
+                                            repository.insertLog(
+                                                GatewayLog(
+                                                    method = method,
+                                                    path = path,
+                                                    requestModel = requestModel,
+                                                    clientIp = clientIp,
+                                                    status = 501,
+                                                    durationMs = duration,
+                                                    responsePreview = "Rejected: stream:true on cloud route (501 not_implemented)",
+                                                    isAuthorized = authorized
+                                                )
+                                            )
+                                        } catch (dbEx: Throwable) {
+                                            Log.e("ProxyServerManager", "DB logging failed for cloud-stream 501 reject", dbEx)
+                                        }
+                                        return@withContext
+                                    }
+
                                     // Cloud Gemini: cloudUpstreamId is set by the
                                     // registry for every CLOUD entry, so the old
                                     // substring-`pro` heuristic is gone. The
                                     // upstream id is whatever the registry says.
                                     val upstreamId = routed.info.cloudUpstreamId ?: routed.info.modelId
 
-                                    val geminiPayload = OpenAiToGeminiTranslator.translateRequest(rawBody)
+                                    // Multimodal data: URI parsing happens inside
+                                    // translateRequest. A malformed image_url
+                                    // (e.g. http(s)://, missing data, non-base64
+                                    // data URI) throws MultimodalParseException
+                                    // which we catch here and render as a 400
+                                    // rather than letting it fall through to the
+                                    // generic "Gateway failure" 500 below.
+                                    val geminiPayload = try {
+                                        OpenAiToGeminiTranslator.translateRequest(rawBody)
+                                    } catch (mmEx: OpenAiToGeminiTranslator.MultimodalParseException) {
+                                        httpStatus = mmEx.httpStatus
+                                        outputResponseText = HttpErrors.jsonError(
+                                            message = mmEx.message ?: "Multimodal content block could not be parsed.",
+                                            type = mmEx.errType,
+                                            code = mmEx.httpStatus
+                                        )
+                                        sendJsonResponse(outputStream, mmEx.httpStatus, outputResponseText)
+                                        return@withContext
+                                    }
                                     val mediaType = "application/json".toMediaType()
                                     val reqBodyArgs = geminiPayload.toRequestBody(mediaType)
                                     val geminiUrl = "https://generativelanguage.googleapis.com/v1beta/models/" +
@@ -579,6 +693,43 @@ class ProxyServerManager(
                                     // See app/src/main/java/com/example/inference/LiteRtLmEngine.kt
                                     // for the canonical lifecycle, mirroring google-ai-edge/gallery's LlmChatModelHelper.
                                     val req = OpenAiToGeminiTranslator.extractLocalEngineRequest(rawBody)
+
+                                    // The local engine is text-only today
+                                    // (HistoryTurn(role, text)). If the request
+                                    // included image_url / input_audio blocks,
+                                    // refuse rather than silently drop them —
+                                    // a text-only reply that pretends not to
+                                    // have seen the image is a worse failure
+                                    // mode than an explicit 400. See
+                                    // plan.md §11 PR #7.
+                                    if (req.rejectedMultimodalReason != null) {
+                                        httpStatus = 400
+                                        outputResponseText = HttpErrors.jsonError(
+                                            message = req.rejectedMultimodalReason!!,
+                                            type = "multimodal_not_supported",
+                                            code = 400
+                                        )
+                                        sendJsonResponse(outputStream, 400, outputResponseText)
+                                        val duration = System.currentTimeMillis() - startTime
+                                        try {
+                                            repository.insertLog(
+                                                GatewayLog(
+                                                    method = method,
+                                                    path = path,
+                                                    requestModel = requestModel,
+                                                    clientIp = clientIp,
+                                                    status = 400,
+                                                    durationMs = duration,
+                                                    responsePreview = "Rejected: multimodal blocks on local engine (400)",
+                                                    isAuthorized = authorized
+                                                )
+                                            )
+                                        } catch (dbEx: Throwable) {
+                                            Log.e("ProxyServerManager", "DB logging failed for multimodal 400 reject", dbEx)
+                                        }
+                                        return@withContext
+                                    }
+
                                     val params = LiteRtLmEngine.GenerationParams(
                                         maxOutputTokens = req.maxTokens,
                                         temperature = req.temperature,
@@ -590,13 +741,95 @@ class ProxyServerManager(
                                         model = routed.info,
                                         params = params,
                                         systemInstruction = req.systemInstruction,
-                                        history = req.history
+                                        history = req.history,
+                                        npuOptIn = resolvedSettings.enableNpuBackend
                                     )
                                     if (loadErr != null) {
+                                        // Engine-load failures come back as
+                                        // JSON 4xx/5xx whether or not the
+                                        // client asked to stream. The client
+                                        // hasn't seen any SSE bytes yet, so
+                                        // a clean JSON envelope is the right
+                                        // wire shape — not a half-opened SSE
+                                        // stream that immediately errors.
                                         val (code, body) = OpenAiToGeminiTranslator.wrapLocalError(loadErr, requestModel)
                                         httpStatus = code
                                         outputResponseText = body
                                         sendJsonResponse(outputStream, code, body)
+                                    } else if (isStreaming) {
+                                        // Real SSE streaming path. Wires
+                                        // `LiteRtLmEngine.generateStreaming`
+                                        // (added in PR #6) into the OpenAI
+                                        // chat.completion.chunk frame format
+                                        // built by the translator helpers.
+                                        // Once headers go out the door, all
+                                        // subsequent failures must surface
+                                        // as in-band SSE error frames + DONE
+                                        // sentinel — we cannot rewind the
+                                        // socket to send a JSON 5xx.
+                                        sendSseHeaders(outputStream)
+                                        val (streamId, createdSec) = OpenAiToGeminiTranslator.newStreamSession()
+                                        writeSseFrame(
+                                            outputStream,
+                                            OpenAiToGeminiTranslator.streamingFirstDelta(
+                                                streamId, createdSec, requestModel
+                                            )
+                                        )
+
+                                        val streamResult = LiteRtLmEngine.generateStreaming(
+                                            userText = req.latestUserText,
+                                            onDelta = { deltaText, _ ->
+                                                // Each accumulated-message
+                                                // turn from the SDK arrives
+                                                // as a delta from the prior
+                                                // call (the engine slices
+                                                // it for us via lastSentLength).
+                                                writeSseFrame(
+                                                    outputStream,
+                                                    OpenAiToGeminiTranslator.streamingContentDelta(
+                                                        streamId, createdSec, requestModel, deltaText
+                                                    )
+                                                )
+                                            }
+                                        )
+
+                                        when (streamResult) {
+                                            is LiteRtLmEngine.Result.Ok -> {
+                                                writeSseFrame(
+                                                    outputStream,
+                                                    OpenAiToGeminiTranslator.streamingFinish(
+                                                        streamId, createdSec, requestModel, streamResult
+                                                    )
+                                                )
+                                                writeSseDone(outputStream)
+                                                httpStatus = 200
+                                                // Gateway-log preview:
+                                                // surface the accumulated
+                                                // text. The "Raw: ..." JSON
+                                                // fallback in the log block
+                                                // below picks this up.
+                                                outputResponseText = streamResult.text
+                                            }
+                                            is LiteRtLmEngine.Result.Err -> {
+                                                writeSseFrame(
+                                                    outputStream,
+                                                    OpenAiToGeminiTranslator.streamingError(
+                                                        streamResult.message,
+                                                        streamResult.type,
+                                                        requestModel
+                                                    )
+                                                )
+                                                writeSseDone(outputStream)
+                                                // Map the engine error type
+                                                // to the same status we'd
+                                                // have used non-streaming,
+                                                // for the gateway log only —
+                                                // the wire is already SSE.
+                                                val (code, _) = OpenAiToGeminiTranslator.wrapLocalError(streamResult, requestModel)
+                                                httpStatus = code
+                                                outputResponseText = "stream_err: ${streamResult.type}: ${streamResult.message}"
+                                            }
+                                        }
                                     } else {
                                         when (val r = LiteRtLmEngine.generate(req.latestUserText)) {
                                             is LiteRtLmEngine.Result.Ok -> {
@@ -716,6 +949,42 @@ class ProxyServerManager(
         writer.print("\r\n")
         writer.flush()
         out.write(bytes)
+        out.flush()
+    }
+
+    /**
+     * Writes the response headers for a server-sent-events (SSE) stream:
+     * `text/event-stream`, no caching, and `Connection: close` so the client
+     * detects end-of-stream from EOF (we don't use HTTP/1.1 chunked
+     * transfer-encoding here for simplicity — most SSE clients handle the
+     * close-on-EOF pattern fine).
+     */
+    private fun sendSseHeaders(out: OutputStream) {
+        val writer = PrintWriter(OutputStreamWriter(out, StandardCharsets.UTF_8), true)
+        writer.print("HTTP/1.1 200 OK\r\n")
+        writer.print("Content-Type: text/event-stream; charset=utf-8\r\n")
+        writer.print("Cache-Control: no-cache\r\n")
+        // X-Accel-Buffering disables proxy buffering on nginx-style intermediaries.
+        writer.print("X-Accel-Buffering: no\r\n")
+        writer.print("Access-Control-Allow-Origin: *\r\n")
+        writer.print("Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n")
+        writer.print("Access-Control-Allow-Headers: Content-Type, Authorization, *\r\n")
+        writer.print("Connection: close\r\n")
+        writer.print("\r\n")
+        writer.flush()
+    }
+
+    /** Writes one `data: <json>\n\n` SSE frame and flushes the socket. */
+    private fun writeSseFrame(out: OutputStream, json: String) {
+        out.write("data: ".toByteArray(StandardCharsets.UTF_8))
+        out.write(json.toByteArray(StandardCharsets.UTF_8))
+        out.write("\n\n".toByteArray(StandardCharsets.UTF_8))
+        out.flush()
+    }
+
+    /** Writes the OpenAI-spec terminator `data: [DONE]\n\n`. */
+    private fun writeSseDone(out: OutputStream) {
+        out.write("data: [DONE]\n\n".toByteArray(StandardCharsets.UTF_8))
         out.flush()
     }
 

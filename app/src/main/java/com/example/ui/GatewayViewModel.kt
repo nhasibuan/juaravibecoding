@@ -123,7 +123,14 @@ class GatewayViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    fun applySettings(portText: String, apiKeyText: String, activeModelId: String, provider: String, geminiApiKeyText: String) {
+    fun applySettings(
+        portText: String,
+        apiKeyText: String,
+        activeModelId: String,
+        provider: String,
+        geminiApiKeyText: String,
+        enableNpuBackend: Boolean = false
+    ) {
         viewModelScope.launch {
             try {
                 val validatedPort = portText.toIntOrNull() ?: 8080
@@ -137,7 +144,8 @@ class GatewayViewModel(application: Application) : AndroidViewModel(application)
                         proxyApiKey = apiKeyText.trim(),
                         activeModelId = activeModelId,
                         targetProvider = provider,
-                        geminiApiKey = geminiApiKeyText.trim()
+                        geminiApiKey = geminiApiKeyText.trim(),
+                        enableNpuBackend = enableNpuBackend
                     )
                     repository.updateSettings(updated)
 
