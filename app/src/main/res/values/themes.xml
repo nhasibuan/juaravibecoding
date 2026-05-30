@@ -1,5 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-
-    <style name="Theme.MyApplication" parent="android:Theme.DeviceDefault.NoActionBar" />
+    <!-- Base application theme. -->
+    <style name="Theme.AiProxyGateway" parent="android:Theme.DeviceDefault.NoActionBar">
+        <!-- Customize your light theme here. -->
+        <item name="android:statusBarColor">#1A1C1E</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
 </resources>

@@ -1,3 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">AI Proxy Gateway</string>
+    <string name="server_running">Active</string>
+    <string name="server_stopped">Inactive</string>
+    <string name="server_error">Error State</string>
 </resources>

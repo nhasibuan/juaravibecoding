@@ -1,1035 +1,358 @@
 package com.example.ui
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.widget.Toast
 import androidx.compose.animation.*
+import androidx.compose.animation.core.*
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.GatewayLog
-import com.example.data.LocalModelInfo
+import com.example.data.ModelInfo
 import com.example.data.ModelsRegistry
 import com.example.data.ProxySetting
-import com.example.data.RuntimeType
+import com.example.server.ModelRouter
+import com.example.server.ServerStatus
 import java.text.SimpleDateFormat
-import java.util.*
+import java.util.Date
+import java.util.Locale
 
-@OptIn(ExperimentalLayoutApi::class)
+// Cosmic Midnight Theme Palette Details
+val CosmicDark = Color(0xFF0B0C15)
+val MetallicTeal = Color(0xFF0E1B1D)
+val NeonCyan = Color(0xFF00E6FF)
+val DeepCyanAccent = Color(0xFF082D33)
+val BorderSlate = Color(0xFF1B2A30)
+val GhostText = Color(0xFF80959C)
+
 @Composable
 fun GatewayScreen(
     viewModel: GatewayViewModel,
     modifier: Modifier = Modifier
 ) {
-    val context = LocalContext.current
-    val clipboardManager = LocalClipboardManager.current
-
-    // Observe state variables safely
+    val serverStatus by viewModel.serverStatus.collectAsStateWithLifecycle()
+    val activePort by viewModel.activePort.collectAsStateWithLifecycle()
+    val errorCount by viewModel.errorCount.collectAsStateWithLifecycle()
     val settings by viewModel.settingsState.collectAsStateWithLifecycle()
-    val logs by viewModel.logsState.collectAsStateWithLifecycle()
-    val isRunning by viewModel.isServerRunning.collectAsStateWithLifecycle()
-    val activePort by viewModel.serverPort.collectAsStateWithLifecycle()
-    val serverIp by viewModel.serverIp.collectAsStateWithLifecycle()
-    val downloadProgress by viewModel.downloadProgress.collectAsStateWithLifecycle()
-    val downloadStatus by viewModel.downloadStatus.collectAsStateWithLifecycle()
-    val auditLogFileInfo by viewModel.auditLogFileInfo.collectAsStateWithLifecycle()
+    val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
+    val rawLogs by viewModel.logsState.collectAsStateWithLifecycle()
+    val downloadProgresses by viewModel.downloadProgresses.collectAsStateWithLifecycle()
+    val downloadedModels by viewModel.downloadedModels.collectAsStateWithLifecycle()
 
-    // Temporary states to allow comfortable key-in
-    var portValue by remember { mutableStateOf("8080") }
-    var apiKeyValue by remember { mutableStateOf("") }
-    var showApiKey by remember { mutableStateOf(false) }
-    var geminiApiKeyValue by remember { mutableStateOf("") }
-    var showGeminiApiKey by remember { mutableStateOf(false) }
-    var bypassGpuValue by remember { mutableStateOf(false) }
-    var enableNpuBackendValue by remember { mutableStateOf(false) }
+    var activeTab by remember { mutableStateOf(0) }
+    var selectedLogDetail by remember { mutableStateOf<GatewayLog?>(null) }
+    var showApiKeyDialog by remember { mutableStateOf(false) }
 
-    // Sync input states when configuration loads up from DB
-    LaunchedEffect(settings) {
-        settings?.let {
-            portValue = it.port.toString()
-            apiKeyValue = it.proxyApiKey
-            geminiApiKeyValue = it.geminiApiKey
-            bypassGpuValue = it.bypassGpu
-            enableNpuBackendValue = it.enableNpuBackend
-        }
-    }
+    val context = LocalContext.current
 
-    val baseEndpoint = "http://$serverIp:$activePort"
-    val chatEndpoint = "http://$serverIp:$activePort/v1/chat/completions"
-
-    // Theme values (Deep cosmic dark palette)
-    val backgroundBrush = Brush.verticalGradient(
-        colors = listOf(
-            Color(0xFF0F172A), // Slate 900
-            Color(0xFF020617)  // Slate 950
-        )
-    )
-
-    val surfaceCardColor = Color(0xFF1E293B) // Slate 800
-    val accentCyan = Color(0xFF06B6D4) // Cyan 500
-    val accentGreen = Color(0xFF10B981) // Emerald 500
-    val accentRed = Color(0xFFEF4444) // Red 500
-
-    Box(
+    Scaffold(
         modifier = modifier
             .fillMaxSize()
-            .background(brush = backgroundBrush)
-    ) {
-        LazyColumn(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 16.dp),
-            contentPadding = PaddingValues(top = 24.dp, bottom = 48.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-            // Header
-            item {
+            .background(CosmicDark),
+        topBar = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(CosmicDark)
+                    .statusBarsPadding()
+                    .padding(horizontal = 20.dp, vertical = 12.dp)
+            ) {
                 Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 8.dp),
+                    modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Icon(
-                        imageVector = Icons.Default.Settings,
-                        contentDescription = "Proxy Icon",
-                        tint = accentCyan,
-                        modifier = Modifier
-                            .size(36.dp)
-                            .padding(end = 8.dp)
+                        imageVector = Icons.Default.Build,
+                        contentDescription = "Router Icon",
+                        tint = NeonCyan,
+                        modifier = Modifier.size(32.dp)
                     )
+                    Spacer(modifier = Modifier.width(12.dp))
                     Column {
                         Text(
-                            text = "AI PROXY GATEWAY",
-                            fontSize = 20.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Color.White,
-                            letterSpacing = 1.sp
-                        )
-                        Text(
-                            text = "OpenAI-Compatible Local Translation Server",
-                            fontSize = 12.sp,
-                            color = Color.LightGray.copy(alpha = 0.8f)
-                        )
-                    }
-                }
-            }
-
-            // Status Console Card
-            item {
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("server_status_card"),
-                    colors = CardDefaults.cardColors(containerColor = surfaceCardColor),
-                    shape = RoundedCornerShape(16.dp),
-                    elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(16.dp)
-                    ) {
-                        // Status indicator banner
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(12.dp)
-                                        .clip(RoundedCornerShape(50))
-                                        .background(if (isRunning) accentGreen else accentRed)
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(
-                                    text = if (isRunning) "SERVER: ONLINE" else "SERVER: OFFLINE",
-                                    fontSize = 14.sp,
-                                    fontWeight = FontWeight.ExtraBold,
-                                    color = if (isRunning) accentGreen else accentRed,
-                                    letterSpacing = 0.5.sp
-                                )
-                            }
-
-                            IconButton(
-                                onClick = { viewModel.refreshIp() },
-                                modifier = Modifier.size(28.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Refresh,
-                                    contentDescription = "Refresh Address",
-                                    tint = accentCyan,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.height(16.dp))
-
-                        // Endpoints Displays
-                        Text(
-                            text = "COMPATIBLE BASE URL",
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Color.LightGray.copy(alpha = 0.7f)
-                        )
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 4.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = baseEndpoint,
-                                fontSize = 16.sp,
-                                fontFamily = FontFamily.Monospace,
-                                color = Color.White,
-                                modifier = Modifier.weight(1f)
-                            )
-                            Text(
-                                text = "COPY",
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = accentCyan,
-                                modifier = Modifier
-                                    .padding(start = 8.dp)
-                                    .clickable {
-                                        clipboardManager.setText(AnnotatedString(baseEndpoint))
-                                        Toast.makeText(context, "Copied Base URL!", Toast.LENGTH_SHORT).show()
-                                    }
-                            )
-                        }
-
-                        Spacer(modifier = Modifier.height(8.dp))
-
-                        Text(
-                            text = "CHAT COMPLETION ENDPOINT",
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Color.LightGray.copy(alpha = 0.7f)
-                        )
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 4.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = chatEndpoint,
-                                fontSize = 13.sp,
-                                fontFamily = FontFamily.Monospace,
-                                color = accentCyan,
-                                modifier = Modifier.weight(1f)
-                            )
-                            Text(
-                                text = "COPY",
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = accentCyan,
-                                modifier = Modifier
-                                    .padding(start = 8.dp)
-                                    .clickable {
-                                        clipboardManager.setText(AnnotatedString(chatEndpoint))
-                                        Toast.makeText(context, "Copied endpoint URL!", Toast.LENGTH_SHORT).show()
-                                    }
-                            )
-                        }
-
-                        Spacer(modifier = Modifier.height(16.dp))
-
-                        // Server start/stop action buttons
-                        Button(
-                            onClick = { viewModel.toggleServer() },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(48.dp)
-                                .testTag("server_toggle_button"),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = if (isRunning) accentRed else accentGreen
-                            ),
-                            shape = RoundedCornerShape(8.dp)
-                        ) {
-                            Icon(
-                                imageVector = if (isRunning) Icons.Default.Close else Icons.Default.PlayArrow,
-                                contentDescription = "Toggle Server",
-                                modifier = Modifier.size(20.dp)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = if (isRunning) "STOP SERVER ENGINE" else "START GATEWAY SERVER",
-                                fontWeight = FontWeight.Bold,
-                                letterSpacing = 0.5.sp
-                            )
-                        }
-                    }
-                }
-            }
-
-            // Gateway Configurations Card
-            item {
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(containerColor = surfaceCardColor),
-                    shape = RoundedCornerShape(16.dp)
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(16.dp)
-                    ) {
-                        Text(
-                            text = "SERVER PARAMETERS",
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = accentCyan,
-                            letterSpacing = 1.sp
-                        )
-
-                        Spacer(modifier = Modifier.height(12.dp))
-
-                        // Routing Mode selection
-                        Text(
-                            text = "Routing Model Provider Strategy",
+                            text = "AETHER INTEL",
                             fontSize = 11.sp,
-                            color = Color.LightGray
+                            fontWeight = FontWeight.Bold,
+                            color = NeonCyan,
+                            letterSpacing = 2.sp
                         )
-                        Spacer(modifier = Modifier.height(6.dp))
-
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            val activeProvider = settings?.targetProvider ?: "CLOUD_GEMINI"
-
-                            Button(
-                                onClick = { viewModel.changeProvider("CLOUD_GEMINI") },
-                                modifier = Modifier.weight(1f),
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = if (activeProvider == "CLOUD_GEMINI") accentCyan else Color.DarkGray
-                                ),
-                                shape = RoundedCornerShape(6.dp),
-                                contentPadding = PaddingValues(0.dp)
-                            ) {
-                                Text("Cloud Gemini API", fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                            }
-
-                            Button(
-                                onClick = { viewModel.changeProvider("LOCAL_VAL") },
-                                modifier = Modifier.weight(1f),
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = if (activeProvider == "LOCAL_VAL") accentCyan else Color.DarkGray
-                                ),
-                                shape = RoundedCornerShape(6.dp),
-                                contentPadding = PaddingValues(0.dp)
-                            ) {
-                                Text("LiteRT-LM", fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.height(12.dp))
-
-                        // Port field
-                        OutlinedTextField(
-                            value = portValue,
-                            onValueChange = { portValue = it },
-                            label = { Text("Listening Port") },
-                            placeholder = { Text("e.g. 8080") },
-                            singleLine = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedTextColor = Color.White,
-                                unfocusedTextColor = Color.White,
-                                focusedBorderColor = accentCyan,
-                                unfocusedBorderColor = Color.LightGray.copy(alpha = 0.3f),
-                                focusedLabelColor = accentCyan,
-                                unfocusedLabelColor = Color.LightGray
-                            ),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("port_settings_input")
+                        Text(
+                            text = "AI Proxy Gateway",
+                            fontSize = 20.sp,
+                            fontWeight = FontWeight.Black,
+                            color = Color.White
                         )
-
-                        Spacer(modifier = Modifier.height(12.dp))
-
-                        // API Key Guard field
-                        OutlinedTextField(
-                            value = apiKeyValue,
-                            onValueChange = { apiKeyValue = it },
-                            label = { Text("OAuth / Client Proxy API Key (Optional)") },
-                            placeholder = { Text("Set API key to restrict client queries") },
-                            singleLine = true,
-                            visualTransformation = if (showApiKey) VisualTransformation.None else PasswordVisualTransformation(),
-                            trailingIcon = {
-                                TextButton(onClick = { showApiKey = !showApiKey }) {
-                                    Text(
-                                        text = if (showApiKey) "HIDE" else "SHOW",
-                                        color = accentCyan,
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                }
-                            },
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedTextColor = Color.White,
-                                unfocusedTextColor = Color.White,
-                                focusedBorderColor = accentCyan,
-                                unfocusedBorderColor = Color.LightGray.copy(alpha = 0.3f),
-                                focusedLabelColor = accentCyan,
-                                unfocusedLabelColor = Color.LightGray
-                            ),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("api_key_settings_input")
+                    }
+                    Spacer(modifier = Modifier.weight(1f))
+                    
+                    // Small floating setting icon
+                    IconButton(
+                        onClick = { showApiKeyDialog = true },
+                        modifier = Modifier
+                            .clip(CircleShape)
+                            .background(MetallicTeal)
+                            .size(40.dp)
+                            .testTag("open_key_settings_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Settings,
+                            contentDescription = "API Keys Configuration",
+                            tint = Color.White,
+                            modifier = Modifier.size(20.dp)
                         )
-
-                        Spacer(modifier = Modifier.height(12.dp))
-
-                        // Device-Stored Gemini API Key field
-                        OutlinedTextField(
-                            value = geminiApiKeyValue,
-                            onValueChange = { geminiApiKeyValue = it },
-                            label = { Text("Device-Stored Gemini API Key (Optional)") },
-                            placeholder = { Text("Saves key directly on this Android target") },
-                            singleLine = true,
-                            visualTransformation = if (showGeminiApiKey) VisualTransformation.None else PasswordVisualTransformation(),
-                            trailingIcon = {
-                                TextButton(onClick = { showGeminiApiKey = !showGeminiApiKey }) {
-                                    Text(
-                                        text = if (showGeminiApiKey) "HIDE" else "SHOW",
-                                        color = accentCyan,
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                }
-                            },
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedTextColor = Color.White,
-                                unfocusedTextColor = Color.White,
-                                focusedBorderColor = accentCyan,
-                                unfocusedBorderColor = Color.LightGray.copy(alpha = 0.3f),
-                                focusedLabelColor = accentCyan,
-                                unfocusedLabelColor = Color.LightGray
-                            ),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("gemini_api_key_settings_input")
-                        )
-
-                        Spacer(modifier = Modifier.height(12.dp))
-
-                        // GPU Bypass switch
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(Color.Black.copy(alpha = 0.2f))
-                                .padding(12.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = "Bypass Native GPU Inference",
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = Color.White
-                                )
-                                Spacer(modifier = Modifier.height(2.dp))
-                                Text(
-                                    text = "Forces safe translation simulation fallback on virtual devices or hardware incompatibility.",
-                                    fontSize = 10.sp,
-                                    color = Color.LightGray.copy(alpha = 0.8f)
-                                )
-                            }
-                            Spacer(modifier = Modifier.width(12.dp))
-                            Switch(
-                                checked = bypassGpuValue,
-                                onCheckedChange = { bypassGpuValue = it },
-                                colors = SwitchDefaults.colors(
-                                    checkedThumbColor = Color.Black,
-                                    checkedTrackColor = accentCyan,
-                                    uncheckedThumbColor = Color.LightGray,
-                                    uncheckedTrackColor = Color.DarkGray
-                                )
-                            )
-                        }
-
-                        Spacer(modifier = Modifier.height(12.dp))
-
-                        // NPU Opt-In switch
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(Color.Black.copy(alpha = 0.2f))
-                                .padding(12.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = "Opt-In to LiteRT NPU Acceleration",
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = Color.White
-                                )
-                                Spacer(modifier = Modifier.height(2.dp))
-                                Text(
-                                    text = "Attempts on-device SoC NPU execution. May fail cleanly if NPU drivers/plug-ins are not installed on the device.",
-                                    fontSize = 10.sp,
-                                    color = Color.LightGray.copy(alpha = 0.8f)
-                                )
-                            }
-                            Spacer(modifier = Modifier.width(12.dp))
-                            Switch(
-                                checked = enableNpuBackendValue,
-                                onCheckedChange = { enableNpuBackendValue = it },
-                                colors = SwitchDefaults.colors(
-                                    checkedThumbColor = Color.Black,
-                                    checkedTrackColor = accentCyan,
-                                    uncheckedThumbColor = Color.LightGray,
-                                    uncheckedTrackColor = Color.DarkGray
-                                )
-                            )
-                        }
-
-                        Spacer(modifier = Modifier.height(16.dp))
-
-                        Button(
-                            onClick = {
-                                viewModel.applySettings(
-                                    portText = portValue,
-                                    apiKeyText = apiKeyValue,
-                                    activeModelId = settings?.activeModelId ?: "litert-community/gemma-4-E2B-it-litert-lm",
-                                    provider = settings?.targetProvider ?: "CLOUD_GEMINI",
-                                    geminiApiKeyText = geminiApiKeyValue,
-                                    bypassGpu = bypassGpuValue,
-                                    enableNpuBackend = enableNpuBackendValue
-                                )
-                                Toast.makeText(context, "Proxy parameters updated!", Toast.LENGTH_SHORT).show()
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = accentCyan),
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(8.dp)
-                        ) {
-                            Icon(imageVector = Icons.Default.Check, contentDescription = "Apply settings")
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("SAVE & DETACH SOCKET", fontWeight = FontWeight.Bold)
-                        }
                     }
                 }
-            }
-
-            // Allowed Models Card List
-            item {
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    Text(
-                        text = "ON-DEVICE GATED MODELS",
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = accentCyan,
-                        letterSpacing = 1.sp,
-                        modifier = Modifier.padding(bottom = 8.dp)
-                    )
-
-                    val activeModelId = settings?.activeModelId ?: "litert-community/gemma-4-E2B-it-litert-lm"
-
-                    ModelsRegistry.allowedModels.forEach { model ->
-                        val isSelected = model.modelId == activeModelId
-                        val targetProvider = settings?.targetProvider ?: "CLOUD_GEMINI"
-                        val isCompatible = when (model.runtimeType) {
-                            RuntimeType.CLOUD -> targetProvider == "CLOUD_GEMINI"
-                            RuntimeType.LITERT_LM -> targetProvider == "LOCAL_VAL"
-                            RuntimeType.AICORE -> targetProvider == "LOCAL_VAL"
-                        }
-
-                        Card(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 6.dp)
-                                .border(
-                                    width = if (isSelected) 2.dp else 1.dp,
-                                    color = if (isSelected) accentCyan else Color.Transparent,
-                                    shape = RoundedCornerShape(12.dp)
-                                )
-                                .then(
-                                    if (isCompatible) {
-                                        Modifier.clickable {
-                                            viewModel.changeActiveModel(model.modelId)
-                                            val modeInfo = if (settings?.targetProvider == "LOCAL_VAL") "and set as default fallback local engine!" else "but Cloud routing is currently active"
-                                            Toast.makeText(context, "Default fallback set to: ${model.name} ($modeInfo)", Toast.LENGTH_LONG).show()
-                                        }
-                                    } else {
-                                        Modifier
-                                    }
-                                ),
-                            colors = CardDefaults.cardColors(
-                                containerColor = if (isSelected) Color(0xFF1E293B) else Color(0xFF0F172A).copy(alpha = if (isCompatible) 0.6f else 0.25f)
-                            ),
-                            shape = RoundedCornerShape(12.dp)
-                        ) {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(12.dp)
-                                    .graphicsLayer {
-                                        alpha = if (isCompatible) 1.0f else 0.45f
-                                    }
-                            ) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        modifier = Modifier.weight(1f)
-                                    ) {
-                                        Column {
-                                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                                Text(
-                                                    text = model.name,
-                                                    fontSize = 14.sp,
-                                                    fontWeight = FontWeight.Bold,
-                                                    color = Color.White
-                                                )
-                                                if (isSelected) {
-                                                    Spacer(modifier = Modifier.width(8.dp))
-                                                    val isLocalRouting = settings?.targetProvider == "LOCAL_VAL"
-                                                    Badge(
-                                                        containerColor = if (isLocalRouting) accentGreen else Color(0xFF64748B),
-                                                        contentColor = if (isLocalRouting) Color.Black else Color.White
-                                                    ) {
-                                                        Text(
-                                                            text = if (isLocalRouting) "DEFAULT LOCAL ENGINE" else "DEFAULT STANDBY (CLOUDS ACTIVE)",
-                                                            fontSize = 8.sp,
-                                                            fontWeight = FontWeight.Bold,
-                                                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
-                                                        )
-                                                    }
-                                                }
-                                                if (!isCompatible) {
-                                                    Spacer(modifier = Modifier.width(8.dp))
-                                                    Badge(
-                                                        containerColor = Color.Red.copy(alpha = 0.7f),
-                                                        contentColor = Color.White
-                                                    ) {
-                                                        Text(
-                                                            text = if (targetProvider == "LOCAL_VAL") "REQUIRES CLOUD STRATEGY" else "REQUIRES LOCAL STRATEGY",
-                                                            fontSize = 8.sp,
-                                                            fontWeight = FontWeight.Bold,
-                                                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
-                                                        )
-                                                    }
-                                                }
-                                                if (model.experimental) {
-                                                    Spacer(modifier = Modifier.width(8.dp))
-                                                    Badge(
-                                                        containerColor = Color(0xFFF59E0B), // Orange
-                                                        contentColor = Color.Black
-                                                    ) {
-                                                        Text(
-                                                            text = "EXPERIMENTAL",
-                                                            fontSize = 8.sp,
-                                                            fontWeight = FontWeight.Bold,
-                                                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
-                                                        )
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-
-                                Spacer(modifier = Modifier.height(4.dp))
-                                
-                                Text(
-                                    text = model.description,
-                                    fontSize = 11.sp,
-                                    color = Color.LightGray.copy(alpha = 0.8f)
-                                )
-
-                                Spacer(modifier = Modifier.height(8.dp))
-
-                                // Badges
-                                FlowRow(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                                ) {
-                                    // Memory badge
-                                    Badge(
-                                        containerColor = Color.DarkGray,
-                                        contentColor = Color.White
-                                    ) {
-                                        Text("${model.minDeviceMemoryInGb}GB RAM MIN", fontSize = 8.sp, modifier = Modifier.padding(2.dp))
-                                    }
-
-                                    // Execution platform
-                                    Badge(
-                                        containerColor = if (model.runtimeType == RuntimeType.AICORE) Color(0xFF3B82F6) else Color(0xFFF59E0B),
-                                        contentColor = Color.White
-                                    ) {
-                                        Text(model.runtimeType.name, fontSize = 8.sp, modifier = Modifier.padding(2.dp))
-                                    }
-
-                                    if (model.llmSupportThinking) {
-                                        Badge(
-                                            containerColor = Color(0xFF8B5CF6), // Purple
-                                            contentColor = Color.White
-                                        ) {
-                                            Text("THINKING", fontSize = 8.sp, modifier = Modifier.padding(2.dp))
-                                        }
-                                    }
-
-                                    if (model.llmSupportImage) {
-                                        Badge(
-                                            containerColor = Color(0xFFEC4899), // Pink
-                                            contentColor = Color.White
-                                        ) {
-                                            Text("VISION", fontSize = 8.sp, modifier = Modifier.padding(2.dp))
-                                        }
-                                    }
-                                }
-                                if (model.runtimeType == RuntimeType.LITERT_LM) {
-                                    val localFile = remember(model.modelId, downloadStatus[model.modelId]) { model.getResolvedTargetFile(context) }
-                                    val resolvedPath = remember(localFile) { localFile.absolutePath }
-                                    val isDownloaded = remember(localFile) {
-                                        try {
-                                            localFile.exists() && localFile.length() > 0
-                                        } catch (e: Throwable) {
-                                            false
-                                        }
-                                    }
-                                    val status = downloadStatus[model.modelId] ?: "idle"
-                                    val progress = downloadProgress[model.modelId] ?: 0f
- 
-                                    Spacer(modifier = Modifier.height(10.dp))
-                                    Column(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .background(Color.Black.copy(alpha = 0.25f), shape = RoundedCornerShape(8.dp))
-                                            .border(1.dp, Color.LightGray.copy(alpha = 0.1f), RoundedCornerShape(8.dp))
-                                            .padding(10.dp)
-                                    ) {
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Column(modifier = Modifier.weight(1f)) {
-                                                Text(
-                                                    text = "📂 STORAGE TARGET PATH:",
-                                                    fontSize = 9.sp,
-                                                    fontWeight = FontWeight.Bold,
-                                                    color = accentCyan
-                                                )
-                                                Spacer(modifier = Modifier.height(2.dp))
-                                                Text(
-                                                    text = resolvedPath,
-                                                    fontSize = 9.sp,
-                                                    fontFamily = FontFamily.Monospace,
-                                                    color = Color.LightGray.copy(alpha = 0.8f),
-                                                    maxLines = 2,
-                                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
-                                                )
-                                            }
-                                            Spacer(modifier = Modifier.width(8.dp))
-                                            TextButton(
-                                                onClick = {
-                                                    clipboardManager.setText(AnnotatedString(resolvedPath))
-                                                    Toast.makeText(context, "Copied storage path!", Toast.LENGTH_SHORT).show()
-                                                },
-                                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
-                                            ) {
-                                                Text("COPY PATH", fontSize = 8.sp, fontWeight = FontWeight.Bold, color = accentCyan)
-                                            }
-                                        }
-
-                                        Spacer(modifier = Modifier.height(8.dp))
-
-                                        if (status == "downloading") {
-                                            Row(
-                                                modifier = Modifier.fillMaxWidth(),
-                                                horizontalArrangement = Arrangement.SpaceBetween,
-                                                verticalAlignment = Alignment.CenterVertically
-                                            ) {
-                                                Text(
-                                                    text = "Downloading... ${(progress * 100).toInt()}%",
-                                                    fontSize = 11.sp,
-                                                    fontWeight = FontWeight.Medium,
-                                                    color = accentCyan
-                                                )
-                                            }
-                                            Spacer(modifier = Modifier.height(6.dp))
-                                            LinearProgressIndicator(
-                                                progress = { progress },
-                                                modifier = Modifier
-                                                    .fillMaxWidth()
-                                                    .height(6.dp),
-                                                color = accentCyan,
-                                                trackColor = Color.White.copy(alpha = 0.1f),
-                                                strokeCap = androidx.compose.ui.graphics.StrokeCap.Round
-                                            )
-                                        } else {
-                                            Row(
-                                                modifier = Modifier.fillMaxWidth(),
-                                                horizontalArrangement = Arrangement.SpaceBetween,
-                                                verticalAlignment = Alignment.CenterVertically
-                                            ) {
-                                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                                    Icon(
-                                                        imageVector = if (isDownloaded) Icons.Default.CheckCircle else Icons.Default.Info,
-                                                        contentDescription = "Status",
-                                                        tint = if (isDownloaded) accentGreen else Color.LightGray,
-                                                        modifier = Modifier.size(14.dp)
-                                                    )
-                                                    Spacer(modifier = Modifier.width(4.dp))
-                                                    Text(
-                                                        text = if (isDownloaded) "DOWNLOADED & READY" else "NOT DOWNLOADED",
-                                                        fontSize = 10.sp,
-                                                        fontWeight = FontWeight.Bold,
-                                                        color = if (isDownloaded) accentGreen else Color.LightGray
-                                                    )
-                                                }
-
-                                                if (model.url.isNotEmpty()) {
-                                                    Button(
-                                                        onClick = {
-                                                            viewModel.downloadModel(model)
-                                                            Toast.makeText(context, "Started downloading ${model.name}...", Toast.LENGTH_SHORT).show()
-                                                        },
-                                                        colors = ButtonDefaults.buttonColors(
-                                                            containerColor = if (isDownloaded) Color.DarkGray else accentCyan,
-                                                            contentColor = Color.White
-                                                        ),
-                                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                                                        shape = RoundedCornerShape(6.dp),
-                                                        modifier = Modifier.height(28.dp)
-                                                    ) {
-                                                        Icon(
-                                                            imageVector = Icons.Default.ArrowDropDown,
-                                                            contentDescription = "Download icon",
-                                                            modifier = Modifier.size(12.dp)
-                                                        )
-                                                        Spacer(modifier = Modifier.width(4.dp))
-                                                        Text(
-                                                            text = if (isDownloaded) "RE-DOWNLOAD" else "DOWNLOAD FILE",
-                                                            fontSize = 9.sp,
-                                                            fontWeight = FontWeight.Bold
-                                                        )
-                                                    }
-                                                } else {
-                                                    Badge(
-                                                        containerColor = Color.DarkGray,
-                                                        contentColor = Color.LightGray
-                                                    ) {
-                                                        Text("LOCAL ONLY", fontSize = 8.sp, modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp))
-                                                    }
-                                                }
-                                            }
-
-                                            if (status.startsWith("failed")) {
-                                                Spacer(modifier = Modifier.height(4.dp))
-                                                Text(
-                                                    text = "Download Failed: ${status.substringAfter("failed: ")}",
-                                                    fontSize = 10.sp,
-                                                    color = accentRed,
-                                                    fontWeight = FontWeight.Bold
-                                                )
-                                            }
-                                        }
-                                    }
-                                } else if (model.url.isNotEmpty()) {
-                                    Spacer(modifier = Modifier.height(10.dp))
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .background(Color.Black.copy(alpha = 0.25f), shape = RoundedCornerShape(6.dp))
-                                            .border(1.dp, Color.LightGray.copy(alpha = 0.1f), RoundedCornerShape(6.dp))
-                                            .clickable {
-                                                clipboardManager.setText(AnnotatedString(model.url))
-                                                Toast.makeText(context, "Copied download link!", Toast.LENGTH_SHORT).show()
-                                            }
-                                            .padding(horizontal = 8.dp, vertical = 6.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Text(
-                                            text = "🔗 LINK:",
-                                            fontSize = 9.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            color = accentCyan,
-                                            modifier = Modifier.padding(end = 6.dp)
-                                        )
-                                        Text(
-                                            text = model.url,
-                                            fontSize = 9.sp,
-                                            fontFamily = FontFamily.Monospace,
-                                            color = accentCyan,
-                                            modifier = Modifier.weight(1f),
-                                            maxLines = 1,
-                                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
-                                        )
-                                        Text(
-                                            text = "COPY",
-                                            fontSize = 8.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            color = Color.LightGray.copy(alpha = 0.8f),
-                                            modifier = Modifier.padding(start = 4.dp)
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Realtime Logs Section
-            item {
+                Spacer(modifier = Modifier.height(16.dp))
+                // Tab Selection Layout
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(top = 8.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(MetallicTeal)
+                        .padding(4.dp)
                 ) {
-                    Text(
-                        text = "GATEWAY INWARD TRAFFIC LOGS",
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = accentCyan,
-                        letterSpacing = 1.sp
+                    TabPillButton(
+                        text = "Dashboard",
+                        isActive = activeTab == 0,
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("tab_dashboard"),
+                        onClick = { activeTab = 0 }
                     )
-
-                    TextButton(
-                        onClick = { viewModel.clearLogHistory() },
-                        enabled = logs.isNotEmpty()
-                    ) {
-                        Icon(imageVector = Icons.Default.Delete, contentDescription = "Clear logs", modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("CLEAR", fontSize = 11.sp)
-                    }
+                    TabPillButton(
+                        text = "Models & Logs",
+                        isActive = activeTab == 1,
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("tab_models_logs"),
+                        onClick = { activeTab = 1 }
+                    )
+                }
+            }
+        },
+        bottomBar = {
+            // Keep safe bar padding for notch/system gesture navigation
+            Spacer(modifier = Modifier.navigationBarsPadding())
+        }
+    ) { paddingValues ->
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(paddingValues)
+                .background(CosmicDark)
+        ) {
+            AnimatedContent(
+                targetState = activeTab,
+                transitionSpec = {
+                    fadeIn(animationSpec = tween(220)) togetherWith fadeOut(animationSpec = tween(220))
+                },
+                label = "MainTabTransition"
+            ) { targetTab ->
+                when (targetTab) {
+                    0 -> DashboardTab(
+                        serverStatus = serverStatus,
+                        activePort = activePort,
+                        errorCount = errorCount,
+                        settings = settings,
+                        downloadedModels = downloadedModels,
+                        onToggleServer = {
+                            if (serverStatus == ServerStatus.RUNNING) {
+                                viewModel.stopServer()
+                            } else {
+                                viewModel.startServer()
+                            }
+                        },
+                        onPortChanged = { newPort ->
+                            viewModel.updatePort(newPort)
+                        },
+                        onHardwareChanged = { npu, bypassGpu ->
+                            viewModel.updateHardwareConfigs(npu, bypassGpu)
+                        }
+                    )
+                    1 -> ModelsAndLogsTab(
+                        rawLogs = rawLogs,
+                        downloadProgresses = downloadProgresses,
+                        downloadedModels = downloadedModels,
+                        searchQuery = searchQuery,
+                        onSearchChange = { viewModel.updateQuery(it) },
+                        onClearLogs = { viewModel.clearLogs() },
+                        onDownloadModel = { viewModel.triggerModelDownload(it) },
+                        onDeleteWeight = { viewModel.deleteModelWeight(it) },
+                        onSelectLog = { selectedLogDetail = it }
+                    )
                 }
             }
 
-            item {
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 4.dp),
-                    colors = CardDefaults.cardColors(
-                        containerColor = Color.White.copy(alpha = 0.05f)
-                    ),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, Color.Gray.copy(alpha = 0.2f))
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 8.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column {
-                            Text(
-                                text = "SINGLE FILE AUDIT TRAIL (.LOG)",
-                                fontSize = 9.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = Color.Gray,
-                                letterSpacing = 0.5.sp
-                            )
-                            Spacer(modifier = Modifier.height(2.dp))
-                            Text(
-                                text = auditLogFileInfo,
-                                fontSize = 11.sp,
-                                fontFamily = FontFamily.Monospace,
-                                color = Color.White
-                            )
-                        }
-
-                        TextButton(
-                            onClick = { viewModel.forceSyncAuditLogFile() }
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Refresh,
-                                contentDescription = "Sync audit log file",
-                                modifier = Modifier.size(14.dp),
-                                tint = accentCyan
-                            )
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text(
-                                text = "SYNC TO .LOG",
-                                fontSize = 10.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = accentCyan
-                            )
-                        }
-                    }
-                }
+            // Expanded Detail Modal Bottom Sheet for logs
+            if (selectedLogDetail != null) {
+                LogDetailBottomSheet(
+                    log = selectedLogDetail!!,
+                    onDismiss = { selectedLogDetail = null }
+                )
             }
 
-            if (logs.isEmpty()) {
-                item {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 24.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
+            // Alert API keys setup modal dialog
+            if (showApiKeyDialog) {
+                ApiKeySetupDialog(
+                    initialKey = settings.geminiApiKey,
+                    onSave = {
+                        viewModel.updateApiKey(it)
+                        showApiKeyDialog = false
+                        Toast.makeText(context, "API Key configuration applied", Toast.LENGTH_SHORT).show()
+                    },
+                    onDismiss = { showApiKeyDialog = false }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun TabPillButton(
+    text: String,
+    isActive: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    val backgroundByState = if (isActive) DeepCyanAccent else Color.Transparent
+    val borderByState = if (isActive) BorderSlate else Color.Transparent
+    val tintByState = if (isActive) NeonCyan else GhostText
+    val weight = if (isActive) FontWeight.ExtraBold else FontWeight.Normal
+
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(6.dp))
+            .background(backgroundByState)
+            .clickable(onClick = onClick)
+            .padding(vertical = 10.dp, horizontal = 12.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = text,
+            color = tintByState,
+            fontSize = 14.sp,
+            fontWeight = weight
+        )
+    }
+}
+
+@Composable
+fun DashboardTab(
+    serverStatus: ServerStatus,
+    activePort: Int,
+    errorCount: Int,
+    settings: ProxySetting,
+    downloadedModels: Set<String>,
+    onToggleServer: () -> Unit,
+    onPortChanged: (Int) -> Unit,
+    onHardwareChanged: (Boolean, Boolean) -> Unit
+) {
+    val context = LocalContext.current
+
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 20.dp),
+        verticalArrangement = Arrangement.spacedBy(20.dp),
+        contentPadding = PaddingValues(bottom = 24.dp)
+    ) {
+        // glowing status panel
+        item {
+            ServerStatusGlowCard(
+                status = serverStatus,
+                port = activePort,
+                onToggle = onToggleServer
+            )
+        }
+
+        // endpoints access link paths block
+        item {
+            EndpointsConfigCard(
+                port = activePort,
+                onCopy = { url ->
+                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    clipboard.setPrimaryClip(ClipData.newPlainText("proxy_url", url))
+                    Toast.makeText(context, "URL copied to clipboard", Toast.LENGTH_SHORT).show()
+                }
+            )
+        }
+
+        // Port and API Key quick warning panel
+        item {
+            PortConfigSliderCard(
+                currentPort = settings.port,
+                onPortSaved = onPortChanged
+            )
+        }
+
+        // Hardware details acceleration widget
+        item {
+            HardwareAccCard(
+                settings = settings,
+                onToggleNpu = { onHardwareChanged(it, settings.bypassGpu) },
+                onToggleBypassGpu = { onHardwareChanged(settings.enableNpuBackend, it) }
+            )
+        }
+
+        // APK deployment warning regarding API credential leakage risk
+        item {
+            Card(
+                shape = RoundedCornerShape(12.dp),
+                colors = CardDefaults.cardColors(containerColor = MetallicTeal),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(
-                            imageVector = Icons.Default.Info,
-                            contentDescription = "Terminal placeholder",
-                            tint = Color.Gray,
-                            modifier = Modifier.size(48.dp)
+                            imageVector = Icons.Default.Warning,
+                            contentDescription = "Shield Warning Logo",
+                            tint = Color(0xFFFF5252),
+                            modifier = Modifier.size(20.dp)
                         )
-                        Spacer(modifier = Modifier.height(8.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = "No inward queries logged yet.",
-                            color = Color.Gray,
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                        Text(
-                            text = "Set up your client to point to the base URL above and issue OpenAI chat API calls to test.",
-                            color = Color.Gray.copy(alpha = 0.8f),
-                            fontSize = 11.sp,
-                            modifier = Modifier.padding(horizontal = 24.dp),
-                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                            text = "Security Warning",
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFFFF5252)
                         )
                     }
-                }
-            } else {
-                items(logs, key = { it.id }) { log ->
-                    LogItemRow(log = log, surfaceColor = surfaceCardColor)
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = "I have stored default API credentials in the generated application configurations. Please keep in mind that Android APK files can be easily decompiled, and sensitive variables can be parsed and extracted. Do not release this package publicly.",
+                        fontSize = 12.sp,
+                        color = GhostText,
+                        lineHeight = 16.sp
+                    )
                 }
             }
         }
@@ -1037,104 +360,930 @@ fun GatewayScreen(
 }
 
 @Composable
-fun LogItemRow(log: GatewayLog, surfaceColor: Color) {
-    val formatter = remember { SimpleDateFormat("HH:mm:ss.S", Locale.getDefault()) }
-    val formattedTime = formatter.format(Date(log.timestamp))
-
-    val statusColor = when {
-        log.status == 200 -> Color(0xFF10B981) // Green
-        log.status == 401 -> Color(0xFFF59E0B) // Amber
-        else -> Color(0xFFEF4444) // Red
+fun ServerStatusGlowCard(
+    status: ServerStatus,
+    port: Int,
+    onToggle: () -> Unit
+) {
+    val statusText = when (status) {
+        ServerStatus.RUNNING -> "GATEWAY ACTIVE"
+        ServerStatus.STOPPED -> "OFFLINE / PAUSED"
+        ServerStatus.ERROR -> "PORT ASSIGN ERROR"
     }
 
+    val glowColor = when (status) {
+        ServerStatus.RUNNING -> NeonCyan
+        ServerStatus.STOPPED -> Color(0xFFFFA726)
+        ServerStatus.ERROR -> Color(0xFFFF5252)
+    }
+
+    // pulsing indicator animation
+    val infiniteTransition = rememberInfiniteTransition(label = "indicatorRipple")
+    val alphaAnim by infiniteTransition.animateFloat(
+        initialValue = 0.4f,
+        targetValue = 1.0f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1200, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "alpha"
+    )
+
     Card(
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MetallicTeal),
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 4.dp),
-        colors = CardDefaults.cardColors(containerColor = surfaceColor.copy(alpha = 0.5f)),
-        shape = RoundedCornerShape(8.dp)
+            .testTag("status_glow_card")
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(12.dp)
+                .padding(20.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
         ) {
+            Spacer(modifier = Modifier.height(8.dp))
+            // Pulse circle
+            Box(
+                modifier = Modifier
+                    .size(64.dp)
+                    .clip(CircleShape)
+                    .background(glowColor.copy(alpha = 0.15f * alphaAnim)),
+                contentAlignment = Alignment.Center
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(CircleShape)
+                        .background(glowColor)
+                )
+            }
+            Spacer(modifier = Modifier.height(20.dp))
+            
+            Text(
+                text = statusText,
+                fontSize = 18.sp,
+                color = Color.White,
+                fontWeight = FontWeight.Black,
+                letterSpacing = 1.5.sp
+            )
+            Text(
+                text = "Dynamic Socket Port: $port",
+                fontSize = 12.sp,
+                color = GhostText,
+                modifier = Modifier.padding(top = 4.dp)
+            )
+
+            Spacer(modifier = Modifier.height(20.dp))
+            
+            val buttonColor = if (status == ServerStatus.RUNNING) Color(0xFFFF5252) else NeonCyan
+            val buttonTxt = if (status == ServerStatus.RUNNING) "Deactivate Service" else "Launch Proxy Server"
+            
+            Button(
+                onClick = onToggle,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = buttonColor,
+                    contentColor = CosmicDark
+                ),
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp)
+                    .testTag("server_toggle_button")
+            ) {
+                Text(
+                    text = buttonTxt,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 14.sp
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun EndpointsConfigCard(
+    port: Int,
+    onCopy: (String) -> Unit
+) {
+    Card(
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MetallicTeal),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.padding(20.dp)) {
+            Text(
+                text = "LOCAL GATEWAY LINK ADDRESSES",
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                color = NeonCyan,
+                letterSpacing = 1.5.sp
+            )
+            Spacer(modifier = Modifier.height(16.dp))
+
+            EndpointCopyRow(
+                title = "1. Main Mock completions endpoint",
+                url = "http://localhost:$port/v1/chat/completions",
+                onCopy = onCopy,
+                tagSuffix = "chat_completions"
+            )
+            
+            Spacer(modifier = Modifier.height(12.dp))
+
+            EndpointCopyRow(
+                title = "2. Catalog listing endpoint",
+                url = "http://localhost:$port/v1/models",
+                onCopy = onCopy,
+                tagSuffix = "models"
+            )
+            
+            Spacer(modifier = Modifier.height(16.dp))
+            
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(DeepCyanAccent)
+                    .padding(12.dp)
+            ) {
+                Text(
+                    text = "Insert either URL directly into OpenAI client SDK scripts or tools (e.g., Cursor, LibreChat) as the BASE_URL to route queries through your on-phone LLM models!",
+                    fontSize = 11.sp,
+                    color = GhostText,
+                    lineHeight = 15.sp
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun EndpointCopyRow(
+    title: String,
+    url: String,
+    onCopy: (String) -> Unit,
+    tagSuffix: String
+) {
+    Column {
+        Text(text = title, fontSize = 12.sp, color = Color.White, fontWeight = FontWeight.Bold)
+        Spacer(modifier = Modifier.height(4.dp))
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(8.dp))
+                .background(CosmicDark)
+                .padding(start = 12.dp, top = 4.dp, bottom = 4.dp, end = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = url,
+                fontSize = 12.sp,
+                color = NeonCyan,
+                fontFamily = FontFamily.Monospace,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+            )
+            IconButton(
+                onClick = { onCopy(url) },
+                modifier = Modifier
+                    .size(36.dp)
+                    .testTag("copy_url_button_$tagSuffix")
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Share,
+                    contentDescription = "Copy URL",
+                    tint = Color.White,
+                    modifier = Modifier.size(16.dp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun PortConfigSliderCard(
+    currentPort: Int,
+    onPortSaved: (Int) -> Unit
+) {
+    var portText by remember(currentPort) { mutableStateOf(currentPort.toString()) }
+    val keyboardController = LocalSoftwareKeyboardController.current
+
+    Card(
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MetallicTeal),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.padding(20.dp)) {
+            Text(
+                text = "HTTP ACCESS ROUTER PORT",
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                color = NeonCyan,
+                letterSpacing = 1.5.sp
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                OutlinedTextField(
+                    value = portText,
+                    onValueChange = { portText = it.filter { char -> char.isDigit() } },
+                    label = { Text("Port", color = GhostText) },
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = Color.White,
+                        unfocusedTextColor = Color.White,
+                        focusedBorderColor = NeonCyan,
+                        unfocusedBorderColor = BorderSlate,
+                        focusedContainerColor = CosmicDark,
+                        unfocusedContainerColor = CosmicDark
+                    ),
+                    maxLines = 1,
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = KeyboardType.Number,
+                        imeAction = ImeAction.Done
+                    ),
+                    keyboardActions = KeyboardActions(
+                        onDone = {
+                            val port = portText.toIntOrNull() ?: 8080
+                            onPortSaved(port)
+                            keyboardController?.hide()
+                        }
+                    ),
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag("port_input")
+                )
+                Spacer(modifier = Modifier.width(12.dp))
+                Button(
+                    onClick = {
+                        val port = portText.toIntOrNull() ?: 8080
+                        onPortSaved(port)
+                        keyboardController?.hide()
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = DeepCyanAccent,
+                        contentColor = NeonCyan
+                    ),
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier
+                        .height(56.dp)
+                        .testTag("port_save_button")
+                ) {
+                    Text("Apply")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun HardwareAccCard(
+    settings: ProxySetting,
+    onToggleNpu: (Boolean) -> Unit,
+    onToggleBypassGpu: (Boolean) -> Unit
+) {
+    Card(
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MetallicTeal),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.padding(20.dp)) {
+            Text(
+                text = "HARDWARE PLATFORM ACCELERATORS",
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                color = NeonCyan,
+                letterSpacing = 1.5.sp
+            )
+            Spacer(modifier = Modifier.height(16.dp))
+
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = log.method,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.ExtraBold,
+                        text = "Enable NPU Cores",
+                        fontSize = 14.sp,
                         color = Color.White,
-                        modifier = Modifier
-                            .background(Color.DarkGray, shape = RoundedCornerShape(4.dp))
-                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                        fontWeight = FontWeight.Bold
                     )
-                    Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = log.path,
-                        fontSize = 12.sp,
-                        fontFamily = FontFamily.Monospace,
-                        color = Color.LightGray
+                        text = "Boosts inference using neural processors where available",
+                        fontSize = 11.sp,
+                        color = GhostText
+                    )
+                }
+                Switch(
+                    checked = settings.enableNpuBackend,
+                    onCheckedChange = onToggleNpu,
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = CosmicDark,
+                        checkedTrackColor = NeonCyan,
+                        uncheckedThumbColor = GhostText,
+                        uncheckedTrackColor = CosmicDark
+                    ),
+                    modifier = Modifier.testTag("npu_switch")
+                )
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Bypass GPU Drivers",
+                        fontSize = 14.sp,
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "Forces CPU execution block if GPU kernels raise compile exceptions",
+                        fontSize = 11.sp,
+                        color = GhostText
+                    )
+                }
+                Switch(
+                    checked = settings.bypassGpu,
+                    onCheckedChange = onToggleBypassGpu,
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = CosmicDark,
+                        checkedTrackColor = NeonCyan,
+                        uncheckedThumbColor = GhostText,
+                        uncheckedTrackColor = CosmicDark
+                    ),
+                    modifier = Modifier.testTag("gpu_bypass_switch")
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun ModelsAndLogsTab(
+    rawLogs: List<GatewayLog>,
+    downloadProgresses: Map<String, Int>,
+    downloadedModels: Set<String>,
+    searchQuery: String,
+    onSearchChange: (String) -> Unit,
+    onClearLogs: () -> Unit,
+    onDownloadModel: (String) -> Unit,
+    onDeleteWeight: (String) -> Unit,
+    onSelectLog: (GatewayLog) -> Unit
+) {
+    var subTabState by remember { mutableStateOf(0) } // 0 = logs, 1 = model library
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 20.dp)
+    ) {
+        // sub tabs
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Button(
+                onClick = { subTabState = 0 },
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (subTabState == 0) DeepCyanAccent else MetallicTeal,
+                    contentColor = if (subTabState == 0) NeonCyan else Color.White
+                ),
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier.weight(1f).testTag("subtab_logs")
+            ) {
+                Text("Audit Logs (${rawLogs.size})")
+            }
+            Button(
+                onClick = { subTabState = 1 },
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (subTabState == 1) DeepCyanAccent else MetallicTeal,
+                    contentColor = if (subTabState == 1) NeonCyan else Color.White
+                ),
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier.weight(1f).testTag("subtab_models")
+            ) {
+                Text("Models Library")
+            }
+        }
+
+        if (subTabState == 0) {
+            // Logs section
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                OutlinedTextField(
+                    value = searchQuery,
+                    onValueChange = onSearchChange,
+                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = "Search", tint = GhostText) },
+                    placeholder = { Text("Filter logs...", color = GhostText) },
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = Color.White,
+                        unfocusedTextColor = Color.White,
+                        focusedBorderColor = NeonCyan,
+                        unfocusedBorderColor = BorderSlate,
+                        focusedContainerColor = MetallicTeal,
+                        unfocusedContainerColor = MetallicTeal
+                    ),
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag("logs_filter_input"),
+                    shape = RoundedCornerShape(8.dp),
+                    maxLines = 1
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                IconButton(
+                    onClick = onClearLogs,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(MetallicTeal)
+                        .size(54.dp)
+                        .testTag("clear_logs_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Delete,
+                        contentDescription = "Clear logs",
+                        tint = Color(0xFFFF5252)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            if (rawLogs.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Icon(
+                            imageVector = Icons.Default.Search,
+                            contentDescription = "Spyglass",
+                            tint = BorderSlate,
+                            modifier = Modifier.size(64.dp)
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text(
+                            text = "No request logs traced yet.",
+                            color = GhostText,
+                            fontSize = 14.sp
+                        )
+                        Text(
+                            text = "Ping 'http://localhost:[port]' to view traces",
+                            color = GhostText.copy(alpha = 0.6f),
+                            fontSize = 11.sp,
+                            modifier = Modifier.padding(top = 4.dp)
+                        )
+                    }
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    contentPadding = PaddingValues(bottom = 16.dp)
+                ) {
+                    items(rawLogs) { log ->
+                        LogItemRow(log = log, onClick = { onSelectLog(log) })
+                    }
+                }
+            }
+        } else {
+            // Models Library subtab
+            LazyColumn(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+                contentPadding = PaddingValues(bottom = 24.dp)
+            ) {
+                item {
+                    Text(
+                        text = "ON-DEVICE INFERENCE MODELS (LiteRT)",
+                        fontSize = 11.sp,
+                        color = NeonCyan,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 1.5.sp,
+                        modifier = Modifier.padding(vertical = 4.dp)
+                    )
+                }
+                
+                items(ModelsRegistry.localModels) { model ->
+                    LocalModelCard(
+                        model = model,
+                        progress = downloadProgresses[model.id],
+                        isDownloaded = downloadedModels.contains(model.id),
+                        onDownload = { onDownloadModel(model.id) },
+                        onDelete = { onDeleteWeight(model.id) }
                     )
                 }
 
-                Text(
-                    text = "${log.status}",
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = statusColor,
-                    modifier = Modifier
-                        .background(statusColor.copy(alpha = 0.15f), shape = RoundedCornerShape(4.dp))
-                        .padding(horizontal = 8.dp, vertical = 2.dp)
-                )
+                item {
+                    Divider(color = BorderSlate, thickness = 1.dp, modifier = Modifier.padding(vertical = 12.dp))
+                }
+
+                item {
+                    Text(
+                        text = "CLOUD TRANSLATOR PROXIES (Google AI Studio)",
+                        fontSize = 11.sp,
+                        color = NeonCyan,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 1.5.sp,
+                        modifier = Modifier.padding(vertical = 4.dp)
+                    )
+                }
+
+                items(ModelsRegistry.cloudModels) { model ->
+                    Card(
+                        shape = RoundedCornerShape(12.dp),
+                        colors = CardDefaults.cardColors(containerColor = MetallicTeal),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Info,
+                                contentDescription = "Cloud Icon",
+                                tint = NeonCyan,
+                                modifier = Modifier.size(24.dp)
+                            )
+                            Spacer(modifier = Modifier.width(16.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(text = model.name, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Black)
+                                Text(text = model.description, color = GhostText, fontSize = 11.sp, lineHeight = 15.sp)
+                            }
+                        }
+                    }
+                }
             }
+        }
+    }
+}
 
-            Spacer(modifier = Modifier.height(6.dp))
+@Composable
+fun LogItemRow(log: GatewayLog, onClick: () -> Unit) {
+    val is2xx = log.statusCode in 200..299
+    val statusColor = if (is2xx) Color(0xFF00E6FF) else Color(0xFFFF5252)
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+    val dateFormat = remember { SimpleDateFormat("HH:mm:ss", Locale.getDefault()) }
+
+    Card(
+        shape = RoundedCornerShape(10.dp),
+        colors = CardDefaults.cardColors(containerColor = MetallicTeal),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+    ) {
+        Row(
+            modifier = Modifier.padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(statusColor.copy(alpha = 0.12f))
+                    .padding(vertical = 4.dp, horizontal = 8.dp)
             ) {
                 Text(
-                    text = "Client: ${log.clientIp} • Model: ${log.requestModel}",
-                    fontSize = 10.sp,
-                    color = Color.LightGray.copy(alpha = 0.7f)
-                )
-
-                Text(
-                    text = "${log.durationMs} ms",
-                    fontSize = 10.sp,
-                    color = Color.LightGray.copy(alpha = 0.7f),
-                    fontFamily = FontFamily.Monospace
-                )
-            }
-
-            if (log.responsePreview.isNotEmpty()) {
-                Spacer(modifier = Modifier.height(8.dp))
-                HorizontalDivider(color = Color.White.copy(alpha = 0.05f))
-                Spacer(modifier = Modifier.height(6.dp))
-                Text(
-                    text = log.responsePreview,
+                    text = log.method,
+                    fontWeight = FontWeight.Black,
                     fontSize = 11.sp,
-                    fontFamily = FontFamily.Monospace,
-                    color = Color.LightGray,
-                    modifier = Modifier.fillMaxWidth()
+                    color = statusColor
+                )
+                Text(
+                    text = log.statusCode.toString(),
+                    fontWeight = FontWeight.Normal,
+                    fontSize = 11.sp,
+                    color = statusColor
                 )
             }
 
-            Spacer(modifier = Modifier.height(4.dp))
+            Spacer(modifier = Modifier.width(12.dp))
+
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = log.endpoint,
+                    color = Color.White,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(top = 2.dp)
+                ) {
+                    Text(
+                        text = ModelRouter.getDisplayName(log.modelUsed),
+                        fontSize = 10.sp,
+                        color = GhostText
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "•",
+                        fontSize = 10.sp,
+                        color = BorderSlate
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "${log.latencyMs} ms",
+                        fontSize = 10.sp,
+                        color = NeonCyan
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.width(8.dp))
+
             Text(
-                text = "Time: $formattedTime",
-                fontSize = 8.sp,
-                color = Color.Gray,
-                modifier = Modifier.align(Alignment.End)
+                text = dateFormat.format(Date(log.timestamp)),
+                color = GhostText.copy(alpha = 0.6f),
+                fontSize = 11.sp
             )
         }
     }
+}
+
+@Composable
+fun LocalModelCard(
+    model: ModelInfo,
+    progress: Int?,
+    isDownloaded: Boolean,
+    onDownload: () -> Unit,
+    onDelete: () -> Unit
+) {
+    Card(
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(containerColor = MetallicTeal),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = Icons.Default.Check,
+                    contentDescription = "On device storage icon",
+                    tint = if (isDownloaded) NeonCyan else GhostText,
+                    modifier = Modifier.size(22.dp)
+                )
+                Spacer(modifier = Modifier.width(12.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(text = model.name, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(4.dp))
+                                .background(BorderSlate)
+                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                        ) {
+                            Text(text = "${model.sizeGb} GB", color = GhostText, fontSize = 9.sp)
+                        }
+                    }
+                    Text(text = model.description, color = GhostText, fontSize = 11.sp, lineHeight = 15.sp)
+                }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            if (progress != null) {
+                // Downloading action active
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(text = "Downloading kernels...", color = NeonCyan, fontSize = 11.sp)
+                        Text(text = "$progress%", color = NeonCyan, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    }
+                    Spacer(modifier = Modifier.height(4.dp))
+                    LinearProgressIndicator(
+                        progress = progress / 100f,
+                        color = NeonCyan,
+                        trackColor = CosmicDark,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(CircleShape)
+                    )
+                }
+            } else {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    if (isDownloaded) {
+                        OutlinedButton(
+                            onClick = onDelete,
+                            shape = RoundedCornerShape(6.dp),
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                contentColor = Color(0xFFFF5252)
+                            ),
+                            border = BorderStroke(1.dp, Color(0xFFFF5252).copy(alpha = 0.4f)),
+                            modifier = Modifier
+                                .height(36.dp)
+                                .testTag("delete_weights_${model.id}")
+                        ) {
+                            Text("Clear Cache", fontSize = 11.sp)
+                        }
+                    } else {
+                        Button(
+                            onClick = onDownload,
+                            shape = RoundedCornerShape(6.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = DeepCyanAccent,
+                                contentColor = NeonCyan
+                            ),
+                            modifier = Modifier
+                                .height(36.dp)
+                                .testTag("download_weights_${model.id}")
+                        ) {
+                            Text("Install weights", fontSize = 11.sp)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun LogDetailBottomSheet(
+    log: GatewayLog,
+    onDismiss: () -> Unit
+) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor = CosmicDark,
+        dragHandle = { BottomSheetDefaults.DragHandle(color = BorderSlate) }
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .padding(24.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    text = "${log.method} API TRACE",
+                    color = NeonCyan,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    letterSpacing = 2.sp
+                )
+                Spacer(modifier = Modifier.weight(1f))
+                Text(
+                    text = "Status: ${log.statusCode}",
+                    color = if (log.statusCode in 200..299) NeonCyan else Color(0xFFFF5252),
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Black
+                )
+            }
+            Spacer(modifier = Modifier.height(12.dp))
+            
+            Text(
+                text = log.endpoint,
+                color = Color.White,
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Black
+            )
+            Text(
+                text = "Model Routed: ${ModelRouter.getDisplayName(log.modelUsed)} (${log.latencyMs} ms latency)",
+                fontSize = 12.sp,
+                color = GhostText,
+                modifier = Modifier.padding(top = 4.dp)
+            )
+
+            Spacer(modifier = Modifier.height(20.dp))
+
+            // Body logs snippets
+            CodeBlockField(title = "Request Payload Input Snippet", codeText = log.requestSnippet)
+            Spacer(modifier = Modifier.height(16.dp))
+            CodeBlockField(title = "Response Payload Output Snippet", codeText = log.responseSnippet)
+
+            if (log.errorMessage != null) {
+                Spacer(modifier = Modifier.height(16.dp))
+                Text(text = "Error Stack details:", color = Color(0xFFFF5252), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                Text(text = log.errorMessage, color = Color.White, fontSize = 12.sp)
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+            Button(
+                onClick = onDismiss,
+                colors = ButtonDefaults.buttonColors(containerColor = MetallicTeal, contentColor = Color.White),
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Close Details")
+            }
+        }
+    }
+}
+
+@Composable
+fun CodeBlockField(
+    title: String,
+    codeText: String
+) {
+    Column {
+        Text(text = title, fontSize = 11.sp, color = GhostText, fontWeight = FontWeight.Bold)
+        Spacer(modifier = Modifier.height(4.dp))
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(8.dp))
+                .background(MetallicTeal)
+                .padding(12.dp)
+        ) {
+            Text(
+                text = codeText.ifEmpty { "Empty Payload Text" },
+                color = NeonCyan,
+                fontSize = 11.sp,
+                fontFamily = FontFamily.Monospace,
+                lineHeight = 15.sp
+            )
+        }
+    }
+}
+
+@Composable
+fun ApiKeySetupDialog(
+    initialKey: String,
+    onSave: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var keyText by remember { mutableStateOf(initialKey) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                text = "Google AI Studio API Secrets",
+                fontSize = 16.sp,
+                fontWeight = FontWeight.ExtraBold,
+                color = Color.White
+            )
+        },
+        text = {
+            Column {
+                Text(
+                    text = "If you are running the gateway proxy over an external local area network (from a computer, cursor client or other device), you can override the built-in Studio keys by configuring your custom keys below:",
+                    color = GhostText,
+                    fontSize = 12.sp,
+                    lineHeight = 16.sp
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = keyText,
+                    onValueChange = { keyText = it },
+                    label = { Text("Gemini API Key Override", color = GhostText) },
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = Color.White,
+                        unfocusedTextColor = Color.White,
+                        focusedBorderColor = NeonCyan,
+                        unfocusedBorderColor = BorderSlate,
+                        focusedContainerColor = CosmicDark,
+                        unfocusedContainerColor = CosmicDark
+                    ),
+                    shape = RoundedCornerShape(6.dp),
+                    maxLines = 1,
+                    modifier = Modifier.fillMaxWidth().testTag("api_key_override_input")
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onSave(keyText) },
+                colors = ButtonDefaults.buttonColors(containerColor = NeonCyan, contentColor = CosmicDark),
+                shape = RoundedCornerShape(6.dp),
+                modifier = Modifier.testTag("apply_key_button")
+            ) {
+                Text("Apply Override")
+            }
+        },
+        dismissButton = {
+            TextButton(
+                onClick = onDismiss,
+                colors = ButtonDefaults.textButtonColors(contentColor = Color.White)
+            ) {
+                Text("Cancel")
+            }
+        },
+        containerColor = MetallicTeal
+    )
 }

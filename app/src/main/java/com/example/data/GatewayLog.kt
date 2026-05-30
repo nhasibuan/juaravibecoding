@@ -8,11 +8,11 @@ data class GatewayLog(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val timestamp: Long = System.currentTimeMillis(),
     val method: String,
-    val path: String,
-    val requestModel: String,
-    val clientIp: String,
-    val status: Int,
-    val durationMs: Long,
-    val responsePreview: String,
-    val isAuthorized: Boolean
+    val endpoint: String,
+    val requestSnippet: String = "",
+    val responseSnippet: String = "",
+    val statusCode: Int,
+    val latencyMs: Long,
+    val modelUsed: String,
+    val errorMessage: String? = null
 )

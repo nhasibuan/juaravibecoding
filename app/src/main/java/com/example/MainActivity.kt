@@ -7,27 +7,31 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.ui.GatewayScreen
 import com.example.ui.GatewayViewModel
-import com.example.ui.GatewayViewModelFactory
-import com.example.ui.theme.MyApplicationTheme
+import com.example.ui.theme.AiProxyGatewayTheme
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        
+        // Supports borderless status and navigation bars content rendering
         enableEdgeToEdge()
+        
         setContent {
-            MyApplicationTheme {
-                val viewModel: GatewayViewModel = viewModel(
-                    factory = GatewayViewModelFactory(application)
-                )
+            AiProxyGatewayTheme {
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
-                    GatewayScreen(
-                        viewModel = viewModel,
-                        modifier = Modifier.padding(innerPadding)
-                    )
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(innerPadding)
+                    ) {
+                        val vm = viewModel<GatewayViewModel>()
+                        GatewayScreen(viewModel = vm)
+                    }
                 }
             }
         }
