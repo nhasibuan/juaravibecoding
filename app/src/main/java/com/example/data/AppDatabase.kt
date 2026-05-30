@@ -5,7 +5,7 @@ import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
 
-@Database(entities = [ProxySetting::class, GatewayLog::class], version = 1, exportSchema = false)
+@Database(entities = [ProxySetting::class, GatewayLog::class], version = 3, exportSchema = false)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun proxySettingDao(): ProxySettingDao
     abstract fun gatewayLogDao(): GatewayLogDao
@@ -22,6 +22,7 @@ abstract class AppDatabase : RoomDatabase() {
                     "ai_proxy_gateway_db"
                 )
                     .fallbackToDestructiveMigration()
+                    .fallbackToDestructiveMigrationOnDowngrade()
                     .build()
                 INSTANCE = instance
                 instance

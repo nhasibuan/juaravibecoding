@@ -213,9 +213,9 @@ fun GatewayScreen(
             }
 
             // Expanded Detail Modal Bottom Sheet for logs
-            if (selectedLogDetail != null) {
+            selectedLogDetail?.let { logDetail ->
                 LogDetailBottomSheet(
-                    log = selectedLogDetail!!,
+                    log = logDetail,
                     onDismiss = { selectedLogDetail = null }
                 )
             }
@@ -887,7 +887,7 @@ fun ModelsAndLogsTab(
                 }
 
                 item {
-                    Divider(color = BorderSlate, thickness = 1.dp, modifier = Modifier.padding(vertical = 12.dp))
+                    HorizontalDivider(color = BorderSlate, thickness = 1.dp, modifier = Modifier.padding(vertical = 12.dp))
                 }
 
                 item {
@@ -956,7 +956,7 @@ fun LogItemRow(log: GatewayLog, onClick: () -> Unit) {
                     .padding(vertical = 4.dp, horizontal = 8.dp)
             ) {
                 Text(
-                    text = log.method,
+                    text = log.method ?: "UNKNOWN",
                     fontWeight = FontWeight.Black,
                     fontSize = 11.sp,
                     color = statusColor
@@ -973,7 +973,7 @@ fun LogItemRow(log: GatewayLog, onClick: () -> Unit) {
 
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = log.endpoint,
+                    text = log.endpoint ?: "",
                     color = Color.White,
                     fontSize = 13.sp,
                     fontWeight = FontWeight.Bold,
@@ -986,7 +986,7 @@ fun LogItemRow(log: GatewayLog, onClick: () -> Unit) {
                     modifier = Modifier.padding(top = 2.dp)
                 ) {
                     Text(
-                        text = ModelRouter.getDisplayName(log.modelUsed),
+                        text = ModelRouter.getDisplayName(log.modelUsed ?: "unknown"),
                         fontSize = 10.sp,
                         color = GhostText
                     )
@@ -1140,7 +1140,7 @@ fun LogDetailBottomSheet(
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Text(
-                    text = "${log.method} API TRACE",
+                    text = "${log.method ?: "UNKNOWN"} API TRACE",
                     color = NeonCyan,
                     fontSize = 12.sp,
                     fontWeight = FontWeight.ExtraBold,
@@ -1157,13 +1157,13 @@ fun LogDetailBottomSheet(
             Spacer(modifier = Modifier.height(12.dp))
             
             Text(
-                text = log.endpoint,
+                text = log.endpoint ?: "",
                 color = Color.White,
                 fontSize = 18.sp,
                 fontWeight = FontWeight.Black
             )
             Text(
-                text = "Model Routed: ${ModelRouter.getDisplayName(log.modelUsed)} (${log.latencyMs} ms latency)",
+                text = "Model Routed: ${ModelRouter.getDisplayName(log.modelUsed ?: "unknown")} (${log.latencyMs} ms latency)",
                 fontSize = 12.sp,
                 color = GhostText,
                 modifier = Modifier.padding(top = 4.dp)
@@ -1172,9 +1172,9 @@ fun LogDetailBottomSheet(
             Spacer(modifier = Modifier.height(20.dp))
 
             // Body logs snippets
-            CodeBlockField(title = "Request Payload Input Snippet", codeText = log.requestSnippet)
+            CodeBlockField(title = "Request Payload Input Snippet", codeText = log.requestSnippet ?: "")
             Spacer(modifier = Modifier.height(16.dp))
-            CodeBlockField(title = "Response Payload Output Snippet", codeText = log.responseSnippet)
+            CodeBlockField(title = "Response Payload Output Snippet", codeText = log.responseSnippet ?: "")
 
             if (log.errorMessage != null) {
                 Spacer(modifier = Modifier.height(16.dp))

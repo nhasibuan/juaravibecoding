@@ -7,12 +7,12 @@ import androidx.room.PrimaryKey
 data class GatewayLog(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val timestamp: Long = System.currentTimeMillis(),
-    val method: String,
-    val endpoint: String,
-    val requestSnippet: String = "",
-    val responseSnippet: String = "",
-    val statusCode: Int,
-    val latencyMs: Long,
-    val modelUsed: String,
+    val method: String? = null,
+    val endpoint: String? = null,
+    val requestSnippet: String? = null,
+    val responseSnippet: String? = null,
+    val statusCode: Int = 0,
+    val latencyMs: Long = 0,
+    val modelUsed: String? = null,
     val errorMessage: String? = null
 )

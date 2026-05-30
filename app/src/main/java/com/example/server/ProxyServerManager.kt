@@ -58,7 +58,11 @@ object ProxyServerManager {
         _activePort.value = cpuPort
         serverJob = CoroutineScope(Dispatchers.IO).launch {
             try {
-                val sSocket = ServerSocket(cpuPort)
+                // By creating an unbound ServerSocket and setting reuseAddress=true,
+                // we bypass SO_REUSEADDR port locks (TIME_WAIT) on rapid app restarts
+                val sSocket = ServerSocket()
+                sSocket.reuseAddress = true
+                sSocket.bind(java.net.InetSocketAddress(cpuPort))
                 serverSocket = sSocket
                 _status.value = ServerStatus.RUNNING
                 Log.i("ProxyServerManager", "Gateway hosting on port $cpuPort")
@@ -88,18 +92,28 @@ object ProxyServerManager {
     fun stopServer() {
         Log.i("ProxyServerManager", "Stopping server...")
         _status.value = ServerStatus.STOPPED
-        try {
-            serverSocket?.close()
-        } catch (e: Exception) {
-            Log.e("ProxyServerManager", "Error closing ServerSocket", e)
-        }
+        val socketToClose = serverSocket
         serverSocket = null
         serverJob?.cancel()
         serverJob = null
+        
+        if (socketToClose != null) {
+            CoroutineScope(Dispatchers.IO).launch {
+                try {
+                    socketToClose.close()
+                    Log.i("ProxyServerManager", "ServerSocket closed successfully on I/O dispatcher.")
+                } catch (e: Exception) {
+                    Log.e("ProxyServerManager", "Error closing ServerSocket", e)
+                }
+            }
+        }
     }
 
-    fun rebootServer(newPort: Int) {
+    suspend fun rebootServer(newPort: Int) = withContext(Dispatchers.IO) {
         stopServer()
+        try {
+            delay(150)
+        } catch (e: Exception) {}
         startServer(newPort)
     }
 
@@ -420,18 +434,22 @@ object ProxyServerManager {
         val snippetRes = if (resSnippet.length > 120) resSnippet.substring(0, 117) + "..." else resSnippet
 
         clientScope.launch {
-            repository?.insertLog(
-                GatewayLog(
-                    method = method,
-                    endpoint = endpoint,
-                    requestSnippet = snippetReq,
-                    responseSnippet = snippetRes,
-                    statusCode = statusCode,
-                    latencyMs = duration,
-                    modelUsed = modelUsed,
-                    errorMessage = error
+            try {
+                repository?.insertLog(
+                    GatewayLog(
+                        method = method,
+                        endpoint = endpoint,
+                        requestSnippet = snippetReq,
+                        responseSnippet = snippetRes,
+                        statusCode = statusCode,
+                        latencyMs = duration,
+                        modelUsed = modelUsed,
+                        errorMessage = error
+                    )
                 )
-            )
+            } catch (t: Throwable) {
+                Log.e("ProxyServerManager", "Failed to write audit trace log to database", t)
+            }
         }
     }
 }

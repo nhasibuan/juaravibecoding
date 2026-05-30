@@ -46,8 +46,20 @@ fun AiProxyGatewayTheme(
     val view = LocalView.current
     if (!view.isInEditMode) {
         SideEffect {
-            val window = (view.context as Activity).window
-            window.statusBarColor = Color(0xFF0B0C15).toArgb() // Fix to Cosmic Dark Status bar background
+            try {
+                var context = view.context
+                while (context is android.content.ContextWrapper) {
+                    if (context is Activity) {
+                        context.window.statusBarColor = Color(0xFF0B0C15).toArgb() // Fix to Cosmic Dark Status bar background
+                        break
+                    }
+                    val nextContext = context.baseContext ?: break
+                    if (nextContext == context) break
+                    context = nextContext
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("AiProxyGatewayTheme", "Failed to configure status bar color", e)
+            }
         }
     }
 
