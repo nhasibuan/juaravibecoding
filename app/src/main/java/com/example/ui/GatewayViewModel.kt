@@ -58,11 +58,19 @@ class GatewayViewModel(application: Application) : AndroidViewModel(application)
         }
 
         settingsState = repository.settingsFlow
+            .catch { t ->
+                android.util.Log.e("GatewayViewModel", "Database error in settingsFlow", t)
+                emit(ProxySetting())
+            }
             .map { it ?: ProxySetting() }
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), ProxySetting())
 
         // Combine logs with search queries to enable live filtering in the logger tab
         logsState = repository.allLogsFlow
+            .catch { t ->
+                android.util.Log.e("GatewayViewModel", "Database error in allLogsFlow", t)
+                emit(emptyList())
+            }
             .combine(_searchQuery) { logs, query ->
                 if (query.isBlank()) {
                     logs
@@ -95,12 +103,13 @@ class GatewayViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun updatePort(newPort: Int) {
+        val sanitizedPort = if (newPort in 1024..65535) newPort else 8080
         viewModelScope.launch {
             try {
                 val current = settingsState.value
-                val next = current.copy(port = newPort)
+                val next = current.copy(port = sanitizedPort)
                 repository.updateSettings(next)
-                ProxyServerManager.rebootServer(newPort)
+                ProxyServerManager.rebootServer(sanitizedPort)
             } catch (t: Throwable) {
                 Log.e("GatewayViewModel", "Failed to update port", t)
             }
