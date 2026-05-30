@@ -2,7 +2,7 @@
 
 Aether Intel is a high-performance local AI gateway and proxy application built for Android. It transforms your mobile device into a localized or cloud-orchestrated AI server by translating standard OpenAI-compatible API requests into on-device **LiteRT (TensorFlow Lite)** execution blocks or secure proxy calls to Google's **Google AI Studio (Gemini)** cloud endpoints.
 
-Through this application, developers can seamlessly integrate their existing OpenAI-based development stacks, agent frameworks, and AI code editors (such as Cursor, LibreChat, and LangChain) directly with LLMs running locally or bridged securely on their Android phones.
+Through this application, developers can seamlessly integrate their existing OpenAI-based development stacks, agent frameworks, and AI automation directly with LLMs running locally or bridged securely on their Android phones.
 
 ---
 
