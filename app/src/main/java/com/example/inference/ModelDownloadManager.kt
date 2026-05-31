@@ -67,7 +67,7 @@ object ModelDownloadManager {
             if (json.has(modelId)) {
                 val modelObj = json.getJSONObject(modelId)
                 val status = modelObj.optString("status", "")
-                if (status == "VERIFIED") {
+                if (status == "VERIFIED" || status == "UNVERIFIED") {
                     val filename = getModelFilename(modelId)
                     val file = File(folder, filename)
                     return file.exists() && file.length() > 0
@@ -98,7 +98,7 @@ object ModelDownloadManager {
         }
     }
 
-    private fun markModelVerified(context: Context, modelId: String, sha256: String, sizeBytes: Long) {
+    private fun markModelVerified(context: Context, modelId: String, sha256: String, sizeBytes: Long, status: String = "VERIFIED") {
         try {
             val folder = context.getExternalFilesDir(null) ?: return
             val manifestFile = File(folder, "verified_manifest.json")
@@ -109,7 +109,7 @@ object ModelDownloadManager {
             }
             
             val modelObj = JSONObject().apply {
-                put("status", "VERIFIED")
+                put("status", status)
                 put("sha256", sha256)
                 put("sizeBytes", sizeBytes)
                 put("timestamp", System.currentTimeMillis())
@@ -250,6 +250,7 @@ object ModelDownloadManager {
                 val isEmptyHash = expectedSHA == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
                 val isPlaceholderHash = expectedSHA != null && expectedSHA.startsWith("a6b7c8d9")
 
+                var verifyStatus = "VERIFIED"
                 if (expectedSHA != null && !isEmptyHash && !isPlaceholderHash) {
                     if (calculatedHash.replace(" ", "").lowercase() != expectedSHA.replace(" ", "").lowercase()) {
                         tempFile.delete()
@@ -257,6 +258,7 @@ object ModelDownloadManager {
                         return@flow
                     }
                 } else {
+                    verifyStatus = "UNVERIFIED"
                     Log.w(TAG, "Skipping SHA-256 verification: checksum is absent, empty, or placeholder for $modelId (Calculated: $calculatedHash)")
                 }
 
@@ -266,8 +268,8 @@ object ModelDownloadManager {
                 }
                 tempFile.renameTo(targetFile)
 
-                markModelVerified(context, modelId, calculatedHash, targetFile.length())
-                Log.i(TAG, "Model weight registration complete and verified in manifest. Target='$targetFile'")
+                markModelVerified(context, modelId, calculatedHash, targetFile.length(), verifyStatus)
+                Log.i(TAG, "Model weight registration complete ($verifyStatus) in manifest. Target='$targetFile'")
                 emit(DownloadState.Completed)
             }
         } catch (e: Exception) {

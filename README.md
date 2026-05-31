@@ -24,7 +24,7 @@ Through this application, developers can seamlessly integrate their existing Ope
 ## 1. Detail PRD (Product Requirement Document)
 
 ### **Objectives & Scope**
-The purpose of Juaravibecoding is to bridge the gap between heavy cloud-dependent developer environments and mobile-centric on-device intelligence. Its core goal is to expose an OpenAI-compatible API server directly on an Android device's local loopback (`localhost`) or local area network (Wi-Fi IP), handling translations and processing internally.
+The purpose of Juaravibecoding is to bridge the gap between heavy cloud-dependent developer environments and mobile-centric on-device intelligence. Its core goal is to expose an OpenAI-compatible API server directly on an Android device's local loopback (`localhost`) or local area network (Wi-Fi IP), handling translations and processing internally. Samsung Galaxy S22 is the primary target device for local on-device inference optimization.
 
 ### **Core Capabilities & Features**
 - **Robust TCP Server Socket Orchestrator**: Hosts an embedded HTTP proxy server on a highly customizer-defined port, utilizing async Coroutine thread pools to prevent blocking user interfaces.

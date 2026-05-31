@@ -51,7 +51,6 @@ abstract class AppDatabase : RoomDatabase() {
                     "ai_proxy_gateway_db_v3"
                 )
                     .addMigrations(MIGRATION_3_4, MIGRATION_4_5)
-                    .fallbackToDestructiveMigration()
                     .fallbackToDestructiveMigrationOnDowngrade()
                     .build().also { INSTANCE = it }
             }
