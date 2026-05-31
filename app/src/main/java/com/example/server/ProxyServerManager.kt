@@ -211,7 +211,7 @@ object ProxyServerManager {
             } else if (settings?.geminiApiKey?.isNotEmpty() == true) {
                 settings.geminiApiKey
             } else {
-                com.example.BuildConfig.GEMINI_API_KEY
+                com.example.BuildConfig.GEMINI_API_KEY.orEmpty()
             }
 
             if (ModelRouter.isLocalModel(modelUsed)) {

@@ -202,7 +202,7 @@ adb reverse tcp:8080 tcp:8080
 
 #### **How to Configure External Tools**
 
-##### **1. Cursor AI Code Editor Setup**
+##### **1. Curl Setup**
 ```bash
 curl -X POST http://127.0.0.1:8080/v1/ \
   -H "Content-Type: application/json" \
