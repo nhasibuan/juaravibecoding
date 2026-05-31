@@ -1,6 +1,6 @@
 # Juaravibecoding - Android AI Proxy Gateway
 
-Juaravibecoding is a high-performance local AI gateway and proxy application built for Android. It transforms your mobile device into a localized or cloud-orchestrated AI server by translating standard OpenAI-compatible API requests into on-device **LiteRT (TensorFlow Lite)** execution blocks or secure proxy calls to Google's **Google AI Studio (Gemini)** cloud endpoints.
+Aether Intel is a high-performance local AI gateway and proxy application built for Android. It transforms your mobile device into a localized or cloud-orchestrated AI server by translating standard OpenAI-compatible API requests into on-device **LiteRT (TensorFlow Lite)** execution blocks or secure proxy calls to Google's **Google AI Studio (Gemini)** cloud endpoints.
 
 Through this application, developers can seamlessly integrate their existing OpenAI-based development stacks, agent frameworks, and AI code editors directly with LLMs running locally or bridged securely on their Android phones.
 
@@ -202,7 +202,7 @@ adb reverse tcp:8080 tcp:8080
 
 #### **How to Configure External Tools**
 
-##### **1. Cursor AI Code Editor Setup**
+##### **1. Curl Setup**
 ```bash
 curl -X POST http://127.0.0.1:8080/v1/ \
   -H "Content-Type: application/json" \
