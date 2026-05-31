@@ -9,5 +9,7 @@ data class ProxySetting(
     val port: Int = 8080,
     val geminiApiKey: String = "",
     val enableNpuBackend: Boolean = false,
-    val bypassGpu: Boolean = true
+    val bypassGpu: Boolean = true,
+    val gatewayAuthToken: String = "",
+    val preferredBackend: String = "AUTO"
 )

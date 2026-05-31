@@ -4,6 +4,11 @@
     <!-- Permissions required for hosting the local proxy server and executing API proxying -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
         android:allowBackup="true"
@@ -13,6 +18,15 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.AiProxyGateway"
         android:usesCleartextTraffic="true">
+
+        <service
+            android:name=".server.GatewayForegroundService"
+            android:foregroundServiceType="specialUse|dataSync"
+            android:exported="false">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Hosting local translation proxy gateway for cross-platform app integration." />
+        </service>
         
         <activity
             android:name="com.example.MainActivity"

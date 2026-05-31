@@ -1,6 +1,6 @@
 # Juaravibecoding - Android AI Proxy Gateway
 
-Juaravibecoding is a high-performance local AI gateway and proxy application built for Android. It transforms your mobile device into a localized or cloud-orchestrated AI server by translating standard OpenAI-compatible API requests into on-device **LiteRT (TensorFlow Lite)** execution blocks or secure proxy calls to Google's **Google AI Studio (Gemini)** cloud endpoints.
+Juaravibecoding is a high-performance local AI gateway and proxy application built for Android. It transforms your mobile device into a cloud-orchestrated AI server by translating standard OpenAI-compatible API requests into secure proxy calls to Google's **Google AI Studio (Gemini)** cloud endpoints, alongside offering a fully mockable/simulation-based offline fallback suite for on-device **LiteRT (TensorFlow Lite)** runtime prototyping.
 
 Through this application, developers can seamlessly integrate their existing OpenAI-based development stacks, agent frameworks, and AI code editors directly with LLMs running locally or bridged securely on their Android phones.
 
@@ -29,9 +29,10 @@ The purpose of Juaravibecoding is to bridge the gap between heavy cloud-dependen
 ### **Core Capabilities & Features**
 - **Robust TCP Server Socket Orchestrator**: Hosts an embedded HTTP proxy server on a highly customizer-defined port, utilizing async Coroutine thread pools to prevent blocking user interfaces.
 - **OpenAI-to-Gemini REST Translation Middleware**: Dynamically parsing incoming `/v1/chat/completions` and `/v1/models` JSON payloads, mapping them onto Google AI Studio REST APIs and re-framing downstream responses format-compatibly.
-- **LiteRT On-Device LLM Execution**: Supports loading local lightweight LLMs (such as Gemma 2B, Gemini Nano, or specialized Fine-tuned LiteRT weights) using GPU/NPU-accelerated neural networks on the host smartphone.
+- **Genuine Cloud Bridge**: Fully operational real-time proxy routing directly to the Google AI Studio cloud endpoints.
+- **LiteRT/AICore Simulation Playground**: On-device models (e.g. Gemma, Gemini Nano) and their weight downloading are fully simulated (mocked backend execution) in this prototype, showing downloading states, UI toggles, and performance indicators without embedding massive native ML runtime binaries.
 - **Comprehensive Logging & Audit Trails**: Maintains detailed history logs tracking HTTP status, API latency metrics, used models, raw input/output payload snippets, and active stack trace errors.
-- **Hardware Co-Processor Acceleration Configurator**: Allows real-time toggling of direct hardware pipelines (NPU Cores acceleration vs. GPU Driver bypass) during active execution.
+- **Hardware Co-Processor Acceleration Configurator (UI/Playground Mode)**: Displays and toggles configurations (NPU Cores acceleration vs. GPU Driver bypass) for on-device hardware pipelines as interactive prototype controls.
 - **Cosmic Dark Design UI Interface**: Crafted under Material Design 3 guidelines using beautiful typography pairing, cohesive spacing grids, and high-visibility live status tracers.
 
 ---
@@ -168,7 +169,9 @@ Ready to get your localized AI gateway server running? Follow these detailed ins
    * **Chat completions**: `http://localhost:8080/v1/chat/completions`
    * **Catalog models list**: `http://localhost:8080/v1/models`
 
-### **Step 2: Manage On-Device LLM Weights**
+### **Step 2: Manage On-Device LLM Weights (Simulated / Sandbox Prototype)**
+*(Note: Weights downloading and offline edge-inference compilation are simulated mock features. They demonstrate real-time downloading indicators and provide mock local generation profiles).*
+
 1. Tap on the **Models & Logs** tab at the top of the interface.
 2. Underneath the selection layout, select the **Models Library** subtab.
 3. Review the available models listed under **On-Device Inference Models**.
@@ -234,7 +237,7 @@ client = openai.OpenAI(
 try:
     print("Sending completions request to Android local proxy...")
     response = client.chat.completions.create(
-        model="gemini-1.5-flash",  # Reroutes intelligently
+        model="gemini-3.5-flash",  # Reroutes intelligently
         messages=[
             {"role": "user", "content": "Explain the speed of light in one simple sentence."}
         ],

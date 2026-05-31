@@ -1,19 +1,22 @@
 package com.example.ui
 
 import android.app.Application
+import android.content.Context
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.*
 import com.example.server.ProxyServerManager
 import com.example.server.ServerStatus
+import com.example.server.LogUtility
+import com.example.server.GatewayForegroundService
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 
 class GatewayViewModel(application: Application) : AndroidViewModel(application) {
-    private val repository: GatewayRepository
+    private val repository = GatewayRepository(AppDatabase.getDatabase(application))
     
     // Server state fields bound to ProxyServerManager
     val serverStatus: StateFlow<ServerStatus> = ProxyServerManager.status
@@ -36,12 +39,14 @@ class GatewayViewModel(application: Application) : AndroidViewModel(application)
     private val _downloadedModels = MutableStateFlow<Set<String>>(emptySet())
     val downloadedModels: StateFlow<Set<String>> = _downloadedModels
 
+    val persistedDownloadStates: StateFlow<List<ModelDownloadState>> = repository.downloadStatesFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
     private val downloadJobs = mutableMapOf<String, Job>()
 
     init {
-        val database = AppDatabase.getDatabase(application)
-        repository = GatewayRepository(database)
-        ProxyServerManager.initialize(repository)
+        LogUtility.initialize(application)
+        ProxyServerManager.initialize(repository, application)
 
         // Sync local downloaded models state based on physical file presence
         refreshDownloadedModels()
@@ -50,16 +55,16 @@ class GatewayViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch {
             try {
                 val s = repository.getSettings()
-                ProxyServerManager.startServer(s.port)
+                GatewayForegroundService.startService(application, s.port)
             } catch (t: Throwable) {
-                android.util.Log.e("GatewayViewModel", "Error fetching settings during startup, falling back to port 8080", t)
-                ProxyServerManager.startServer(8080)
+                LogUtility.logError("GatewayViewModel", t)
+                GatewayForegroundService.startService(application, 8080)
             }
         }
 
         settingsState = repository.settingsFlow
             .catch { t ->
-                android.util.Log.e("GatewayViewModel", "Database error in settingsFlow", t)
+                LogUtility.logError("GatewayViewModel_settingsFlow", t)
                 emit(ProxySetting())
             }
             .map { it ?: ProxySetting() }
@@ -68,7 +73,7 @@ class GatewayViewModel(application: Application) : AndroidViewModel(application)
         // Combine logs with search queries to enable live filtering in the logger tab
         logsState = repository.allLogsFlow
             .catch { t ->
-                android.util.Log.e("GatewayViewModel", "Database error in allLogsFlow", t)
+                LogUtility.logError("GatewayViewModel_allLogsFlow", t)
                 emit(emptyList())
             }
             .combine(_searchQuery) { logs, query ->
@@ -90,16 +95,16 @@ class GatewayViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch {
             try {
                 val port = settingsState.value.port
-                ProxyServerManager.startServer(port)
+                GatewayForegroundService.startService(getApplication(), port)
             } catch (t: Throwable) {
                 Log.e("GatewayViewModel", "Failed to start server", t)
-                ProxyServerManager.startServer(8080)
+                GatewayForegroundService.startService(getApplication(), 8080)
             }
         }
     }
 
     fun stopServer() {
-        ProxyServerManager.stopServer()
+        GatewayForegroundService.stopService(getApplication())
     }
 
     fun updatePort(newPort: Int) {
@@ -109,7 +114,9 @@ class GatewayViewModel(application: Application) : AndroidViewModel(application)
                 val current = settingsState.value
                 val next = current.copy(port = sanitizedPort)
                 repository.updateSettings(next)
-                ProxyServerManager.rebootServer(sanitizedPort)
+                GatewayForegroundService.stopService(getApplication())
+                delay(200)
+                GatewayForegroundService.startService(getApplication(), sanitizedPort)
             } catch (t: Throwable) {
                 Log.e("GatewayViewModel", "Failed to update port", t)
             }
@@ -128,6 +135,24 @@ class GatewayViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    fun updateGatewayAuthToken(token: String) {
+        viewModelScope.launch {
+            try {
+                val current = settingsState.value
+                val sToken = token.trim()
+                val nextToken = if (sToken.isEmpty()) {
+                    "gateway_" + java.util.UUID.randomUUID().toString().take(8)
+                } else {
+                    sToken
+                }
+                val next = current.copy(gatewayAuthToken = nextToken)
+                repository.updateSettings(next)
+            } catch (t: Throwable) {
+                Log.e("GatewayViewModel", "Failed to update gateway Auth token", t)
+            }
+        }
+    }
+
     fun updateHardwareConfigs(npu: Boolean, bypassGpu: Boolean) {
         viewModelScope.launch {
             try {
@@ -136,6 +161,18 @@ class GatewayViewModel(application: Application) : AndroidViewModel(application)
                 repository.updateSettings(next)
             } catch (t: Throwable) {
                 Log.e("GatewayViewModel", "Failed to update hardware configurations", t)
+            }
+        }
+    }
+
+    fun updatePreferredBackend(backend: String) {
+        viewModelScope.launch {
+            try {
+                val current = settingsState.value
+                val next = current.copy(preferredBackend = backend)
+                repository.updateSettings(next)
+            } catch (t: Throwable) {
+                Log.e("GatewayViewModel", "Failed to update preferred backend", t)
             }
         }
     }
@@ -150,6 +187,25 @@ class GatewayViewModel(application: Application) : AndroidViewModel(application)
                 repository.clearLogs()
             } catch (t: Throwable) {
                 Log.e("GatewayViewModel", "Failed to clear logs", t)
+            }
+        }
+    }
+
+    fun exportLogsToUri(context: Context, onSuccess: (String) -> Unit) {
+        viewModelScope.launch {
+            try {
+                val list = logsState.value
+                val csv = StringBuilder("ID,Timestamp,Method,Endpoint,StatusCode,LatencyMs,ModelUsed,TokensCount,ErrorMessage\n")
+                list.forEach { log ->
+                    val timestampStr = java.text.DateFormat.getDateTimeInstance().format(java.util.Date(log.timestamp))
+                    val cleanedError = log.errorMessage?.replace(",", ";")?.replace("\n", " ") ?: ""
+                    csv.append("${log.id},\"$timestampStr\",\"${log.method}\",\"${log.endpoint}\",${log.statusCode},${log.latencyMs},\"${log.modelUsed}\",${log.tokensCount},\"$cleanedError\"\n")
+                }
+                val outputFile = java.io.File(context.cacheDir, "gateway_logs_export.csv")
+                outputFile.writeText(csv.toString())
+                onSuccess(outputFile.absolutePath)
+            } catch (t: Throwable) {
+                Log.e("GatewayViewModel", "Error exporting database logs", t)
             }
         }
     }
@@ -196,11 +252,9 @@ class GatewayViewModel(application: Application) : AndroidViewModel(application)
                         }
                     }
 
-                    // Read actually existing weight files
+                    // Read actually existing verified weight files
                     ModelsRegistry.localModels.forEach { model ->
-                        val filename = getModelFilename(model.id)
-                        val file = java.io.File(folder, filename)
-                        if (file.exists() && file.length() > 0) {
+                        if (com.example.inference.ModelDownloadManager.isModelDownloaded(getApplication(), model.id)) {
                             downloaded.add(model.id)
                         }
                     }
@@ -218,37 +272,52 @@ class GatewayViewModel(application: Application) : AndroidViewModel(application)
             downloadJobs[modelId]?.cancel()
             downloadJobs.remove(modelId)
             _downloadProgresses.update { it.toMutableMap().apply { remove(modelId) } }
+            viewModelScope.launch {
+                repository.updateDownloadState(ModelDownloadState(modelId = modelId, progress = 0, status = "PAUSED"))
+            }
             return
         }
 
         val job = viewModelScope.launch {
             try {
-                for (prog in 0..100 step 5) {
-                    _downloadProgresses.update {
-                        it.toMutableMap().apply { put(modelId, prog) }
-                    }
-                    delay(150) // simulated speed increments
-                }
-                
-                // Write weight file to disk upon complete download verification
-                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                    val folder = getApplication<Application>().getExternalFilesDir(null)
-                    if (folder != null) {
-                        val filename = getModelFilename(modelId)
-                        val targetFile = java.io.File(folder, filename)
-                        try {
-                            targetFile.writeText("Quantized model weights for $modelId, fully initialized via LiteRT on-device sandbox proxy.")
-                        } catch (e: Exception) {
-                            android.util.Log.e("GatewayViewModel", "Error saving downloaded weights file", e)
+                com.example.inference.ModelDownloadManager.downloadModel(getApplication(), modelId).collect { state ->
+                    when (state) {
+                        is com.example.inference.DownloadState.Initializing -> {
+                            _downloadProgresses.update { it.toMutableMap().apply { put(modelId, 0) } }
+                            repository.updateDownloadState(ModelDownloadState(modelId = modelId, progress = 0, status = "INITIALIZING"))
+                        }
+                        is com.example.inference.DownloadState.Progress -> {
+                            _downloadProgresses.update { it.toMutableMap().apply { put(modelId, state.percent) } }
+                            repository.updateDownloadState(ModelDownloadState(
+                                modelId = modelId,
+                                progress = state.percent,
+                                status = "DOWNLOADING",
+                                downloadedBytes = state.downloadedBytes,
+                                totalBytes = state.totalBytes
+                            ))
+                        }
+                        is com.example.inference.DownloadState.Verifying -> {
+                            _downloadProgresses.update { it.toMutableMap().apply { put(modelId, 99) } }
+                            repository.updateDownloadState(ModelDownloadState(modelId = modelId, progress = 99, status = "VERIFYING"))
+                        }
+                        is com.example.inference.DownloadState.Completed -> {
+                            _downloadProgresses.update { it.toMutableMap().apply { remove(modelId) } }
+                            repository.updateDownloadState(ModelDownloadState(modelId = modelId, progress = 100, status = "COMPLETED"))
+                            refreshDownloadedModels()
+                        }
+                        is com.example.inference.DownloadState.Error -> {
+                            Log.e("GatewayViewModel", "Download error: ${state.message}")
+                            _downloadProgresses.update { it.toMutableMap().apply { remove(modelId) } }
+                            repository.updateDownloadState(ModelDownloadState(modelId = modelId, progress = 0, status = "FAILED", errorMessage = state.message))
+                            refreshDownloadedModels()
                         }
                     }
                 }
-
-                _downloadProgresses.update { it.toMutableMap().apply { remove(modelId) } }
-                downloadJobs.remove(modelId)
-                refreshDownloadedModels()
             } catch (e: Exception) {
-                // handle cancel or fail
+                _downloadProgresses.update { it.toMutableMap().apply { remove(modelId) } }
+                repository.updateDownloadState(ModelDownloadState(modelId = modelId, progress = 0, status = "FAILED", errorMessage = e.localizedMessage))
+            } finally {
+                downloadJobs.remove(modelId)
             }
         }
         downloadJobs[modelId] = job
@@ -261,6 +330,8 @@ class GatewayViewModel(application: Application) : AndroidViewModel(application)
 
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             try {
+                // Delete download state from Room
+                repository.deleteDownloadState(modelId)
                 // Remove actual physical file
                 val folder = getApplication<Application>().getExternalFilesDir(null)
                 if (folder != null) {
@@ -281,8 +352,5 @@ class GatewayViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    override fun onCleared() {
-        super.onCleared()
-        ProxyServerManager.stopServer()
-    }
+
 }

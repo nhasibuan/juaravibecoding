@@ -8,6 +8,7 @@ import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -196,6 +197,9 @@ fun GatewayScreen(
                         },
                         onHardwareChanged = { npu, bypassGpu ->
                             viewModel.updateHardwareConfigs(npu, bypassGpu)
+                        },
+                        onBackendChanged = { backend ->
+                            viewModel.updatePreferredBackend(backend)
                         }
                     )
                     1 -> ModelsAndLogsTab(
@@ -205,6 +209,11 @@ fun GatewayScreen(
                         searchQuery = searchQuery,
                         onSearchChange = { viewModel.updateQuery(it) },
                         onClearLogs = { viewModel.clearLogs() },
+                        onExportLogs = {
+                            viewModel.exportLogsToUri(context) { path ->
+                                Toast.makeText(context, "Telemetry logs exported to: $path", Toast.LENGTH_LONG).show()
+                            }
+                        },
                         onDownloadModel = { viewModel.triggerModelDownload(it) },
                         onDeleteWeight = { viewModel.deleteModelWeight(it) },
                         onSelectLog = { selectedLogDetail = it }
@@ -224,10 +233,12 @@ fun GatewayScreen(
             if (showApiKeyDialog) {
                 ApiKeySetupDialog(
                     initialKey = settings.geminiApiKey,
-                    onSave = {
-                        viewModel.updateApiKey(it)
+                    initialGatewayToken = settings.gatewayAuthToken,
+                    onSave = { apiKey, gatewayToken ->
+                        viewModel.updateApiKey(apiKey)
+                        viewModel.updateGatewayAuthToken(gatewayToken)
                         showApiKeyDialog = false
-                        Toast.makeText(context, "API Key configuration applied", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, "API Secrets / Gateway Access configuration applied", Toast.LENGTH_SHORT).show()
                     },
                     onDismiss = { showApiKeyDialog = false }
                 )
@@ -274,7 +285,8 @@ fun DashboardTab(
     downloadedModels: Set<String>,
     onToggleServer: () -> Unit,
     onPortChanged: (Int) -> Unit,
-    onHardwareChanged: (Boolean, Boolean) -> Unit
+    onHardwareChanged: (Boolean, Boolean) -> Unit,
+    onBackendChanged: (String) -> Unit
 ) {
     val context = LocalContext.current
 
@@ -319,7 +331,8 @@ fun DashboardTab(
             HardwareAccCard(
                 settings = settings,
                 onToggleNpu = { onHardwareChanged(it, settings.bypassGpu) },
-                onToggleBypassGpu = { onHardwareChanged(settings.enableNpuBackend, it) }
+                onToggleBypassGpu = { onHardwareChanged(settings.enableNpuBackend, it) },
+                onBackendSelected = onBackendChanged
             )
         }
 
@@ -643,7 +656,8 @@ fun PortConfigSliderCard(
 fun HardwareAccCard(
     settings: ProxySetting,
     onToggleNpu: (Boolean) -> Unit,
-    onToggleBypassGpu: (Boolean) -> Unit
+    onToggleBypassGpu: (Boolean) -> Unit,
+    onBackendSelected: (String) -> Unit
 ) {
     Card(
         shape = RoundedCornerShape(16.dp),
@@ -721,6 +735,46 @@ fun HardwareAccCard(
                     modifier = Modifier.testTag("gpu_bypass_switch")
                 )
             }
+
+            Spacer(modifier = Modifier.height(20.dp))
+            HorizontalDivider(color = GhostText.copy(alpha = 0.2f))
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Text(
+                text = "PREFERRED INFERENCE DEVICE",
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                color = NeonCyan,
+                letterSpacing = 1.5.sp
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                listOf("AUTO", "CPU", "GPU", "NPU").forEach { backend ->
+                    val isSelected = settings.preferredBackend == backend
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(if (isSelected) NeonCyan else CosmicDark)
+                            .border(1.dp, if (isSelected) Color.Transparent else GhostText.copy(alpha = 0.3f), RoundedCornerShape(8.dp))
+                            .clickable { onBackendSelected(backend) }
+                            .padding(vertical = 10.dp)
+                            .testTag("backend_option_${backend.lowercase()}"),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = backend,
+                            color = if (isSelected) CosmicDark else Color.White,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            }
         }
     }
 }
@@ -733,6 +787,7 @@ fun ModelsAndLogsTab(
     searchQuery: String,
     onSearchChange: (String) -> Unit,
     onClearLogs: () -> Unit,
+    onExportLogs: () -> Unit,
     onDownloadModel: (String) -> Unit,
     onDeleteWeight: (String) -> Unit,
     onSelectLog: (GatewayLog) -> Unit
@@ -800,6 +855,21 @@ fun ModelsAndLogsTab(
                     shape = RoundedCornerShape(8.dp),
                     maxLines = 1
                 )
+                Spacer(modifier = Modifier.width(8.dp))
+                IconButton(
+                    onClick = onExportLogs,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(MetallicTeal)
+                        .size(54.dp)
+                        .testTag("export_logs_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Share,
+                        contentDescription = "Export logs",
+                        tint = NeonCyan
+                    )
+                }
                 Spacer(modifier = Modifier.width(8.dp))
                 IconButton(
                     onClick = onClearLogs,
@@ -1224,16 +1294,18 @@ fun CodeBlockField(
 @Composable
 fun ApiKeySetupDialog(
     initialKey: String,
-    onSave: (String) -> Unit,
+    initialGatewayToken: String,
+    onSave: (String, String) -> Unit,
     onDismiss: () -> Unit
 ) {
     var keyText by remember { mutableStateOf(initialKey) }
+    var gatewayTokenText by remember { mutableStateOf(initialGatewayToken) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
         title = {
             Text(
-                text = "Google AI Studio API Secrets",
+                text = "Gateway Secrets & API Access",
                 fontSize = 16.sp,
                 fontWeight = FontWeight.ExtraBold,
                 color = Color.White
@@ -1264,16 +1336,41 @@ fun ApiKeySetupDialog(
                     maxLines = 1,
                     modifier = Modifier.fillMaxWidth().testTag("api_key_override_input")
                 )
+                Spacer(modifier = Modifier.height(16.dp))
+                Text(
+                    text = "Gateway Authorization Token (optional, protects from local unauthorized proxy requests):",
+                    color = GhostText,
+                    fontSize = 12.sp,
+                    lineHeight = 16.sp
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = gatewayTokenText,
+                    onValueChange = { gatewayTokenText = it },
+                    placeholder = { Text("e.g. my-secure-token", color = Color.Gray) },
+                    label = { Text("Local Gateway Access Token", color = GhostText) },
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = Color.White,
+                        unfocusedTextColor = Color.White,
+                        focusedBorderColor = NeonCyan,
+                        unfocusedBorderColor = BorderSlate,
+                        focusedContainerColor = CosmicDark,
+                        unfocusedContainerColor = CosmicDark
+                    ),
+                    shape = RoundedCornerShape(6.dp),
+                    maxLines = 1,
+                    modifier = Modifier.fillMaxWidth().testTag("gateway_auth_token_input")
+                )
             }
         },
         confirmButton = {
             Button(
-                onClick = { onSave(keyText) },
+                onClick = { onSave(keyText, gatewayTokenText) },
                 colors = ButtonDefaults.buttonColors(containerColor = NeonCyan, contentColor = CosmicDark),
                 shape = RoundedCornerShape(6.dp),
                 modifier = Modifier.testTag("apply_key_button")
             ) {
-                Text("Apply Override")
+                Text("Apply Configuration")
             }
         },
         dismissButton = {

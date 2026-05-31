@@ -14,34 +14,29 @@ import com.example.ui.GatewayScreen
 import com.example.ui.GatewayViewModel
 import com.example.ui.theme.AiProxyGatewayTheme
 
+import android.os.Build
+import com.example.server.LogUtility
+
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        LogUtility.initialize(this)
+
         val originalHandler = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
-            try {
-                val folder = getExternalFilesDir(null)
-                if (folder != null) {
-                    if (!folder.exists()) folder.mkdirs()
-                    val file = java.io.File(folder, "crash_log.txt")
-                    val trace = android.util.Log.getStackTraceString(throwable)
-                    file.writeText(trace)
-                }
-            } catch (e: Throwable) {
-                // ignore
-            }
+            LogUtility.logError("UncaughtCrash", throwable)
             originalHandler?.uncaughtException(thread, throwable)
         }
 
-        try {
-            val folder = getExternalFilesDir(null)
-            if (folder != null) {
-                if (!folder.exists()) folder.mkdirs()
-                java.io.File(folder, "startup_log.txt").writeText("MainActivity onCreate initialized at ${System.currentTimeMillis()}")
+        LogUtility.logMessage("MainActivity", "onCreate initialized at ${System.currentTimeMillis()}")
+        
+        // Request notification permissions dynamically on Android 13+ to support foreground service notification
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val permission = "android.permission.POST_NOTIFICATIONS"
+            if (checkSelfPermission(permission) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(arrayOf(permission), 101)
             }
-        } catch (e: Throwable) {
-            // ignore
         }
         
         // Supports borderless status and navigation bars content rendering

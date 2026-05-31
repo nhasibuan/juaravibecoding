@@ -1,6 +1,6 @@
 package com.example.server
 
-import com.example.inference.LiteRtLmEngine
+import com.example.data.ModelsRegistry
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
@@ -9,39 +9,7 @@ object OpenAiToGeminiTranslator {
 
     class MultimodalParseException(message: String) : Exception(message)
 
-    fun translateOpenAiMessages(messagesArray: JSONArray): List<LiteRtLmEngine.HistoryTurn> {
-        val list = mutableListOf<LiteRtLmEngine.HistoryTurn>()
-        for (i in 0 until messagesArray.length()) {
-            val msg = messagesArray.getJSONObject(i)
-            val roleStr = msg.optString("role", "user")
-            val contentObj = msg.opt("content")
-            
-            val text = when (contentObj) {
-                is JSONArray -> {
-                    val sb = StringBuilder()
-                    for (j in 0 until contentObj.length()) {
-                        val piece = contentObj.getJSONObject(j)
-                        if (piece.optString("type") == "text") {
-                            sb.append(piece.optString("text"))
-                        }
-                    }
-                    sb.toString()
-                }
-                else -> contentObj?.toString() ?: ""
-            }
-
-            val role = if (roleStr.equals("assistant", ignoreCase = true)) {
-                LiteRtLmEngine.HistoryRole.ASSISTANT
-            } else {
-                LiteRtLmEngine.HistoryRole.USER
-            }
-
-            list.add(LiteRtLmEngine.HistoryTurn(role, text))
-        }
-        return list
-    }
-
-    fun wrapLocalSuccess(res: LiteRtLmEngine.Result.Ok, openAiModel: String): String {
+    fun wrapLocalSuccess(text: String, tokensGenerated: Int, openAiModel: String): String {
         val created = System.currentTimeMillis() / 1000
         val uuid = "chatcmpl-" + UUID.randomUUID().toString().replace("-", "")
         
@@ -56,7 +24,7 @@ object OpenAiToGeminiTranslator {
         
         val msg = JSONObject()
         msg.put("role", "assistant")
-        msg.put("content", res.text)
+        msg.put("content", text)
         
         choice.put("message", msg)
         choice.put("finish_reason", "stop")
@@ -66,9 +34,10 @@ object OpenAiToGeminiTranslator {
         response.put("choices", choices)
         
         val usage = JSONObject()
-        usage.put("prompt_tokens", (res.text.length / 4) + 10) // rough proxy estimation
-        usage.put("completion_tokens", res.tokensGenerated)
-        usage.put("total_tokens", (res.text.length / 4) + 10 + res.tokensGenerated)
+        val estimatedPrompt = (text.length / 4) + 8
+        usage.put("prompt_tokens", estimatedPrompt) 
+        usage.put("completion_tokens", tokensGenerated)
+        usage.put("total_tokens", estimatedPrompt + tokensGenerated)
         response.put("usage", usage)
         
         return response.toString()
@@ -102,28 +71,6 @@ object OpenAiToGeminiTranslator {
         return "data: ${chunkObj}\n\n"
     }
 
-    fun wrapLocalError(res: LiteRtLmEngine.Result.Err, openAiModel: String): Pair<Int, String> {
-        val code = when (res) {
-            is LiteRtLmEngine.Result.Err.IncompleteWeights -> 400
-            is LiteRtLmEngine.Result.Err.LoadError -> 500
-            is LiteRtLmEngine.Result.Err.ExecutionError -> 500
-        }
-        
-        val errObj = JSONObject()
-        val innerErr = JSONObject()
-        innerErr.put("message", "Local LiteRT-LM engine error: " + when (res) {
-            is LiteRtLmEngine.Result.Err.IncompleteWeights -> res.message
-            is LiteRtLmEngine.Result.Err.LoadError -> res.message
-            is LiteRtLmEngine.Result.Err.ExecutionError -> res.message
-        })
-        innerErr.put("type", "invalid_request_error")
-        innerErr.put("param", JSONObject.NULL)
-        innerErr.put("code", code)
-        errObj.put("error", innerErr)
-        
-        return Pair(code, errObj.toString())
-    }
-
     fun wrapStandardError(statusCode: Int, message: String): String {
         val errObj = JSONObject()
         val inner = JSONObject()
@@ -140,42 +87,14 @@ object OpenAiToGeminiTranslator {
         root.put("object", "list")
         val data = JSONArray()
         
-        // Add Gemini models
-        val gemini35 = JSONObject()
-        gemini35.put("id", "gemini-3.5-flash")
-        gemini35.put("object", "model")
-        gemini35.put("created", 1700000000)
-        gemini35.put("owned_by", "google")
-        data.put(gemini35)
-
-        val gemini30Pro = JSONObject()
-        gemini30Pro.put("id", "gemini-3.1-pro-preview")
-        gemini30Pro.put("object", "model")
-        gemini30Pro.put("created", 1700000000)
-        gemini30Pro.put("owned_by", "google")
-        data.put(gemini30Pro)
-
-        // Add local LiteRT models
-        val gemma2b = JSONObject()
-        gemma2b.put("id", "gemma-2b-it")
-        gemma2b.put("object", "model")
-        gemma2b.put("created", 1700000000)
-        gemma2b.put("owned_by", "google-local")
-        data.put(gemma2b)
-
-        val llama32 = JSONObject()
-        llama32.put("id", "llama-3.2-1b-it")
-        llama32.put("object", "model")
-        llama32.put("created", 1700000000)
-        llama32.put("owned_by", "meta-local")
-        data.put(llama32)
-
-        val deepseek = JSONObject()
-        deepseek.put("id", "deepseek-r1-dist-qwen-1.5b")
-        deepseek.put("object", "model")
-        deepseek.put("created", 1700000000)
-        deepseek.put("owned_by", "deepseek-local")
-        data.put(deepseek)
+        ModelsRegistry.allModels.forEach { model ->
+            val m = JSONObject()
+            m.put("id", model.id)
+            m.put("object", "model")
+            m.put("created", 1700000000)
+            m.put("owned_by", if (model.isLocal) "local-edge" else "google-cloud")
+            data.put(m)
+        }
 
         root.put("data", data)
         return root.toString()

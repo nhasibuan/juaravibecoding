@@ -14,5 +14,6 @@ data class GatewayLog(
     val statusCode: Int = 0,
     val latencyMs: Long = 0,
     val modelUsed: String? = null,
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    val tokensCount: Int = 0
 )
