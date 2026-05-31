@@ -28,7 +28,7 @@ class MainActivity : ComponentActivity() {
                     val trace = android.util.Log.getStackTraceString(throwable)
                     file.writeText(trace)
                 }
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 // ignore
             }
             originalHandler?.uncaughtException(thread, throwable)
@@ -40,7 +40,7 @@ class MainActivity : ComponentActivity() {
                 if (!folder.exists()) folder.mkdirs()
                 java.io.File(folder, "startup_log.txt").writeText("MainActivity onCreate initialized at ${System.currentTimeMillis()}")
             }
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             // ignore
         }
         

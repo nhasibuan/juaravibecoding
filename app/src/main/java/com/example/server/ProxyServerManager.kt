@@ -98,12 +98,21 @@ object ProxyServerManager {
         serverJob = null
         
         if (socketToClose != null) {
-            CoroutineScope(Dispatchers.IO).launch {
+            if (android.os.Looper.myLooper() != android.os.Looper.getMainLooper()) {
                 try {
                     socketToClose.close()
-                    Log.i("ProxyServerManager", "ServerSocket closed successfully on I/O dispatcher.")
+                    Log.i("ProxyServerManager", "ServerSocket closed synchronously.")
                 } catch (e: Exception) {
-                    Log.e("ProxyServerManager", "Error closing ServerSocket", e)
+                    Log.e("ProxyServerManager", "Error closing ServerSocket synchronously", e)
+                }
+            } else {
+                CoroutineScope(Dispatchers.IO).launch {
+                    try {
+                        socketToClose.close()
+                        Log.i("ProxyServerManager", "ServerSocket closed successfully on I/O dispatcher.")
+                    } catch (e: Exception) {
+                        Log.e("ProxyServerManager", "Error closing ServerSocket", e)
+                    }
                 }
             }
         }
@@ -137,8 +146,10 @@ object ProxyServerManager {
             method = parts[0]
             path = parts[1].split("?")[0]
 
-            // We only process OpenAI compatible endpoints
-            if (path != "/v1/chat/completions" && path != "/v1/models") {
+            val isChat = path == "/v1/chat/completions" || path == "/v1/chat/completions/" || ((path == "/v1" || path == "/v1/") && method == "POST")
+            val isModels = path == "/v1/models" || path == "/v1/models/"
+
+            if (!isChat && !isModels) {
                 statusCode = 404
                 val errJson = OpenAiToGeminiTranslator.wrapStandardError(404, "Endpoint $path not found on Android local proxy gateway.")
                 sendHttpResponse(writer, 404, errJson)
@@ -174,7 +185,7 @@ object ProxyServerManager {
             }
             val requestBodyStr = bodyBuilder.toString()
 
-            if (path == "/v1/models") {
+            if (isModels) {
                 val json = OpenAiToGeminiTranslator.wrapModelsResponse()
                 sendHttpResponse(writer, 200, json)
                 recordLogEntry("GET", "/v1/models", "", "Retrieved listings", 200, System.currentTimeMillis() - startTime, "registry", null)

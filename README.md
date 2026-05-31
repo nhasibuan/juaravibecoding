@@ -1,6 +1,6 @@
-# Aether Intel - Android AI Proxy Gateway
+# Juaravibecoding - Android AI Proxy Gateway
 
-Aether Intel is a high-performance local AI gateway and proxy application built for Android. It transforms your mobile device into a localized or cloud-orchestrated AI server by translating standard OpenAI-compatible API requests into on-device **LiteRT (TensorFlow Lite)** execution blocks or secure proxy calls to Google's **Google AI Studio (Gemini)** cloud endpoints.
+Juaravibecoding is a high-performance local AI gateway and proxy application built for Android. It transforms your mobile device into a localized or cloud-orchestrated AI server by translating standard OpenAI-compatible API requests into on-device **LiteRT (TensorFlow Lite)** execution blocks or secure proxy calls to Google's **Google AI Studio (Gemini)** cloud endpoints.
 
 Through this application, developers can seamlessly integrate their existing OpenAI-based development stacks, agent frameworks, and AI code editors directly with LLMs running locally or bridged securely on their Android phones.
 
@@ -24,7 +24,7 @@ Through this application, developers can seamlessly integrate their existing Ope
 ## 1. Detail PRD (Product Requirement Document)
 
 ### **Objectives & Scope**
-The purpose of Aether Intel is to bridge the gap between heavy cloud-dependent developer environments and mobile-centric on-device intelligence. Its core goal is to expose an OpenAI-compatible API server directly on an Android device's local loopback (`localhost`) or local area network (Wi-Fi IP), handling translations and processing internally.
+The purpose of Juaravibecoding is to bridge the gap between heavy cloud-dependent developer environments and mobile-centric on-device intelligence. Its core goal is to expose an OpenAI-compatible API server directly on an Android device's local loopback (`localhost`) or local area network (Wi-Fi IP), handling translations and processing internally.
 
 ### **Core Capabilities & Features**
 - **Robust TCP Server Socket Orchestrator**: Hosts an embedded HTTP proxy server on a highly customizer-defined port, utilizing async Coroutine thread pools to prevent blocking user interfaces.
@@ -71,7 +71,7 @@ Tracks transactional requests made to the server, assisting debugging, analysis,
 
 ### **Use of Objects and Functions (Used By / Used For)**
 
-The Aether Intel source codebase is structured logically to maintain a strict separation of concerns, operating cleanly across data boundaries, state controllers, and rendering components:
+The Juaravibecoding source codebase is structured logically to maintain a strict separation of concerns, operating cleanly across data boundaries, state controllers, and rendering components:
 
 ```
 ┌───────────────────────────────────────────────────────────┐
@@ -160,7 +160,7 @@ The Aether Intel source codebase is structured logically to maintain a strict se
 Ready to get your localized AI gateway server running? Follow these detailed instructions.
 
 ### **Step 1: Launch and Start Proxy Server**
-1. Open the **Aether Intel** application on your Android device.
+1. Open the **Juaravibecoding** application on your Android device.
 2. In the **Dashboard** panel, check the **Launcher Button** reading "Launch Proxy Server".
 3. Press **Launch Proxy Server**.
 4. The status indicator immediately transitions into a pulsing neon turquoise icon indicating **GATEWAY ACTIVE**.
@@ -203,16 +203,21 @@ adb reverse tcp:8080 tcp:8080
 #### **How to Configure External Tools**
 
 ##### **1. Cursor AI Code Editor Setup**
-1. Launch **Cursor** on your computer.
-2. Navigate to **Settings** > **Models** block.
-3. Find the **OpenAI API Key** or override parameters.
-4. Set the **Custom Base URL** text input to:
-   ```
-   http://localhost:8080/v1
-   ```
-5. Enter a placeholder string as the API Key (e.g., `sk-aether-intel-local`).
-6. Toggle on preferred models (e.g., `gemini-1.5-pro` or on-device model matching labels).
-7. Execute queries! All your completions tasks will route transparently through the Android phone gateway.
+```bash
+curl -X POST http://127.0.0.1:8080/v1/ \
+  -H "Content-Type: application/json" \
+  -H "Authorization: a" \
+  -d '{
+    "model": "litert-community/Gemma3-1B-IT",
+    "messages": [
+      {
+        "role": "user",
+        "content": "Explain how gravity shapes stellar structures."
+      }
+    ],
+    "temperature": 0.4
+  }'
+```
 
 ##### **2. Python Test Script (OpenAI SDK)**
 Ensure you have the `openai` python library installed. Create a file named `test_gateway.py` with the following content:

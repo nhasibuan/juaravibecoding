@@ -99,7 +99,7 @@ fun GatewayScreen(
                     Spacer(modifier = Modifier.width(12.dp))
                     Column {
                         Text(
-                            text = "AETHER INTEL",
+                            text = "JUARAVIBECODING",
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold,
                             color = NeonCyan,
