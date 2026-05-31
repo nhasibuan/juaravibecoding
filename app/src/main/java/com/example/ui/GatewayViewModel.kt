@@ -141,7 +141,7 @@ class GatewayViewModel(application: Application) : AndroidViewModel(application)
                 val current = settingsState.value
                 val sToken = token.trim()
                 val nextToken = if (sToken.isEmpty()) {
-                    "gateway_" + java.util.UUID.randomUUID().toString().take(8)
+                    "gateway_" + java.util.UUID.randomUUID().toString().replace("-", "")
                 } else {
                     sToken
                 }
@@ -149,6 +149,24 @@ class GatewayViewModel(application: Application) : AndroidViewModel(application)
                 repository.updateSettings(next)
             } catch (t: Throwable) {
                 Log.e("GatewayViewModel", "Failed to update gateway Auth token", t)
+            }
+        }
+    }
+
+    fun updateExposeToLan(expose: Boolean) {
+        viewModelScope.launch {
+            try {
+                val current = settingsState.value
+                val next = current.copy(exposeToLan = expose)
+                repository.updateSettings(next)
+                // Restart server if running to apply host bind change
+                if (serverStatus.value == ServerStatus.RUNNING) {
+                    GatewayForegroundService.stopService(getApplication())
+                    delay(250)
+                    GatewayForegroundService.startService(getApplication(), current.port)
+                }
+            } catch (t: Throwable) {
+                Log.e("GatewayViewModel", "Failed to update expose to LAN setting", t)
             }
         }
     }
@@ -235,20 +253,22 @@ class GatewayViewModel(application: Application) : AndroidViewModel(application)
                         folder.mkdirs()
                     }
                     // Populate default demo/requested weights on first run so the requested files exist
-                    val demoGemma3File = java.io.File(folder, "gemma3-1b-it-int4.litertlm")
-                    if (!demoGemma3File.exists()) {
-                        try {
-                            demoGemma3File.writeText("Placeholder local weights for Gemma 3 1B IT")
-                        } catch (e: Exception) {
-                            android.util.Log.e("GatewayViewModel", "Failed to write placeholder Gemma 3", e)
+                    if (com.example.BuildConfig.DEMO_MODE) {
+                        val demoGemma3File = java.io.File(folder, "gemma3-1b-it-int4.litertlm")
+                        if (!demoGemma3File.exists()) {
+                            try {
+                                demoGemma3File.writeText("Placeholder local weights for Gemma 3 1B IT")
+                            } catch (e: Exception) {
+                                android.util.Log.e("GatewayViewModel", "Failed to write placeholder Gemma 3", e)
+                            }
                         }
-                    }
-                    val demoGemma4File = java.io.File(folder, "gemma4_2b_v09_obfus_fix_all_modalities_thinking.litertlm")
-                    if (!demoGemma4File.exists()) {
-                        try {
-                            demoGemma4File.writeText("Placeholder local weights for Gemma 4 2B IT (Obfuscated Fix)")
-                        } catch (e: Exception) {
-                            android.util.Log.e("GatewayViewModel", "Failed to write placeholder Gemma 4", e)
+                        val demoGemma4File = java.io.File(folder, "gemma4_2b_v09_obfus_fix_all_modalities_thinking.litertlm")
+                        if (!demoGemma4File.exists()) {
+                            try {
+                                demoGemma4File.writeText("Placeholder local weights for Gemma 4 2B IT (Obfuscated Fix)")
+                            } catch (e: Exception) {
+                                android.util.Log.e("GatewayViewModel", "Failed to write placeholder Gemma 4", e)
+                            }
                         }
                     }
 

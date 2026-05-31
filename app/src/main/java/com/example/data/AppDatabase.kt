@@ -24,6 +24,25 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS `model_download_states` (
+                        `modelId` TEXT NOT NULL, 
+                        `progress` INTEGER NOT NULL DEFAULT 0, 
+                        `status` TEXT NOT NULL DEFAULT 'NOT_STARTED', 
+                        `downloadedBytes` INTEGER NOT NULL DEFAULT 0, 
+                        `totalBytes` INTEGER NOT NULL DEFAULT 0, 
+                        `errorMessage` TEXT, 
+                        PRIMARY KEY(`modelId`)
+                    )
+                """.trimIndent())
+                db.execSQL("ALTER TABLE `proxy_settings` ADD COLUMN `gatewayAuthToken` TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE `proxy_settings` ADD COLUMN `preferredBackend` TEXT NOT NULL DEFAULT 'AUTO'")
+                db.execSQL("ALTER TABLE `proxy_settings` ADD COLUMN `exposeToLan` INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -31,7 +50,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "ai_proxy_gateway_db_v3"
                 )
-                    .addMigrations(MIGRATION_3_4)
+                    .addMigrations(MIGRATION_3_4, MIGRATION_4_5)
                     .fallbackToDestructiveMigration()
                     .fallbackToDestructiveMigrationOnDowngrade()
                     .build().also { INSTANCE = it }

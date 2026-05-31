@@ -11,5 +11,6 @@ data class ProxySetting(
     val enableNpuBackend: Boolean = false,
     val bypassGpu: Boolean = true,
     val gatewayAuthToken: String = "",
-    val preferredBackend: String = "AUTO"
+    val preferredBackend: String = "AUTO",
+    val exposeToLan: Boolean = false
 )

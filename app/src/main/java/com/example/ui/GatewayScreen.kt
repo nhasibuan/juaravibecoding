@@ -106,12 +106,33 @@ fun GatewayScreen(
                             color = NeonCyan,
                             letterSpacing = 2.sp
                         )
-                        Text(
-                            text = "AI Proxy Gateway",
-                            fontSize = 20.sp,
-                            fontWeight = FontWeight.Black,
-                            color = Color.White
-                        )
+                        androidx.compose.foundation.layout.Row(
+                            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "AI Proxy Gateway",
+                                fontSize = 20.sp,
+                                fontWeight = FontWeight.Black,
+                                color = Color.White
+                            )
+                            if (com.example.BuildConfig.DEMO_MODE) {
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(4.dp))
+                                        .background(NeonCyan.copy(alpha = 0.15f))
+                                        .border(1.dp, NeonCyan, RoundedCornerShape(4.dp))
+                                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                                ) {
+                                    Text(
+                                        text = "SIMULATED",
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = NeonCyan
+                                    )
+                                }
+                            }
+                        }
                     }
                     Spacer(modifier = Modifier.weight(1f))
                     
@@ -200,6 +221,9 @@ fun GatewayScreen(
                         },
                         onBackendChanged = { backend ->
                             viewModel.updatePreferredBackend(backend)
+                        },
+                        onExposeToLanChanged = { expose ->
+                            viewModel.updateExposeToLan(expose)
                         }
                     )
                     1 -> ModelsAndLogsTab(
@@ -286,7 +310,8 @@ fun DashboardTab(
     onToggleServer: () -> Unit,
     onPortChanged: (Int) -> Unit,
     onHardwareChanged: (Boolean, Boolean) -> Unit,
-    onBackendChanged: (String) -> Unit
+    onBackendChanged: (String) -> Unit,
+    onExposeToLanChanged: (Boolean) -> Unit
 ) {
     val context = LocalContext.current
 
@@ -324,6 +349,56 @@ fun DashboardTab(
                 currentPort = settings.port,
                 onPortSaved = onPortChanged
             )
+        }
+
+        // Network security config card
+        item {
+            Card(
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MetallicTeal),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(20.dp)) {
+                    Text(
+                        text = "NETWORK SECURITY GATEWAY",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = NeonCyan,
+                        letterSpacing = 1.5.sp
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Expose Server to LAN",
+                                fontSize = 14.sp,
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = if (settings.exposeToLan) "Listening on all local interfaces (accessible on LAN)" else "Loopback mode active (accessible only by local device apps)",
+                                fontSize = 11.sp,
+                                color = GhostText
+                            )
+                        }
+                        Switch(
+                            checked = settings.exposeToLan,
+                            onCheckedChange = onExposeToLanChanged,
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = CosmicDark,
+                                checkedTrackColor = NeonCyan,
+                                uncheckedThumbColor = GhostText,
+                                uncheckedTrackColor = CosmicDark
+                            ),
+                            modifier = Modifier.testTag("lan_exposure_switch")
+                        )
+                    }
+                }
+            }
         }
 
         // Hardware details acceleration widget

@@ -10,6 +10,7 @@ import android.content.Intent
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import com.example.MainActivity
 import com.example.data.AppDatabase
@@ -24,6 +25,7 @@ class GatewayForegroundService : Service() {
     private val serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var repository: GatewayRepository? = null
     private var wifiLock: WifiManager.WifiLock? = null
+    private var wakeLock: PowerManager.WakeLock? = null
 
     companion object {
         private const val CHANNEL_ID = "gateway_foreground_service_channel"
@@ -73,7 +75,17 @@ class GatewayForegroundService : Service() {
         ProxyServerManager.initialize(repository!!, applicationContext)
         createNotificationChannel()
 
-        // Initialize WifiLock to keep socket layer alive on standby
+        // Initialize locks to keep socket layer alive on standby
+        try {
+            val powerManager = applicationContext.getSystemService(Context.POWER_SERVICE) as? PowerManager
+            if (powerManager != null) {
+                wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "AiProxyGateway::WakeLock").apply {
+                    setReferenceCounted(false)
+                }
+            }
+        } catch (t: Throwable) {
+            LogUtility.logError("GatewayForegroundServiceWakeLockInit", t)
+        }
         try {
             val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
             wifiLock = wifiManager?.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "GatewayWifiLock")
@@ -135,7 +147,18 @@ class GatewayForegroundService : Service() {
             stopSelf()
         }
 
-        // Acquire WifiLock to prevent network drops
+        // Acquire WakeLock and WifiLock to prevent CPU and network drops
+        try {
+            wakeLock?.let {
+                if (!it.isHeld) {
+                    it.acquire()
+                    LogUtility.logMessage("GatewayForegroundService", "WakeLock acquired.")
+                }
+            }
+        } catch (t: Throwable) {
+            LogUtility.logError("GatewayForegroundServiceWakeLockAcquire", t)
+        }
+
         try {
             wifiLock?.let {
                 if (!it.isHeld) {
@@ -155,7 +178,7 @@ class GatewayForegroundService : Service() {
 
     private fun stopForegroundService() {
         ProxyServerManager.stopServer()
-        releaseWifiLock()
+        releaseLocks()
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
                 stopForeground(STOP_FOREGROUND_REMOVE)
@@ -169,7 +192,17 @@ class GatewayForegroundService : Service() {
         stopSelf()
     }
 
-    private fun releaseWifiLock() {
+    private fun releaseLocks() {
+        try {
+            wakeLock?.let {
+                if (it.isHeld) {
+                    it.release()
+                    LogUtility.logMessage("GatewayForegroundService", "WakeLock released.")
+                }
+            }
+        } catch (t: Throwable) {
+            LogUtility.logError("GatewayForegroundServiceWakeLockRelease", t)
+        }
         try {
             wifiLock?.let {
                 if (it.isHeld) {
@@ -188,7 +221,7 @@ class GatewayForegroundService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
-        releaseWifiLock()
+        releaseLocks()
         serviceScope.cancel()
     }
 

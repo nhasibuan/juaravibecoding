@@ -44,7 +44,13 @@ class HttpGatewayServer(
                 _status.value = ServerStatus.STOPPED
                 val socket = ServerSocket()
                 socket.reuseAddress = true
-                socket.bind(java.net.InetSocketAddress(port))
+                val settings = repository.getSettings()
+                val socketAddress = if (settings.exposeToLan) {
+                    java.net.InetSocketAddress(port)
+                } else {
+                    java.net.InetSocketAddress("127.0.0.1", port)
+                }
+                socket.bind(socketAddress)
                 serverSocket = socket
                 _status.value = ServerStatus.RUNNING
                 LogUtility.logMessage("HttpGatewayServer", "Secure server started on port $port")

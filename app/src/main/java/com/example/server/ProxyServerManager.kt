@@ -24,8 +24,6 @@ object ProxyServerManager {
 
     private var repository: GatewayRepository? = null
     private var context: Context? = null
-    private var wakeLock: PowerManager.WakeLock? = null
-    private var wifiLock: WifiManager.WifiLock? = null
 
     fun initialize(repo: GatewayRepository, ctx: Context) {
         this.repository = repo
@@ -47,27 +45,6 @@ object ProxyServerManager {
         }
 
         _activePort.value = cpuPort
-
-        // Acquire partial wake and high performance WiFi locks to keep server always-on
-        try {
-            val powerManager = ctx.getSystemService(Context.POWER_SERVICE) as? PowerManager
-            if (powerManager != null) {
-                wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "AiProxyGateway::WakeLock").apply {
-                    setReferenceCounted(false)
-                    acquire()
-                }
-            }
-            val wifiManager = ctx.getSystemService(Context.WIFI_SERVICE) as? WifiManager
-            if (wifiManager != null) {
-                wifiLock = wifiManager.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "AiProxyGateway::WifiLock").apply {
-                    setReferenceCounted(false)
-                    acquire()
-                }
-            }
-            LogUtility.logMessage("ProxyServerManager", "Acquired WakeLock and WifiLock successfully.")
-        } catch (e: Throwable) {
-            LogUtility.logError("ProxyServerManagerLocks", e)
-        }
 
         try {
             val server = HttpGatewayServer(ctx, repo, cpuPort)
@@ -104,21 +81,6 @@ object ProxyServerManager {
         activeServer?.stop()
         activeServer = null
         _status.value = ServerStatus.STOPPED
-
-        // Release keeps-awake locks
-        try {
-            wakeLock?.let {
-                if (it.isHeld) it.release()
-            }
-            wakeLock = null
-            wifiLock?.let {
-                if (it.isHeld) it.release()
-            }
-            wifiLock = null
-            LogUtility.logMessage("ProxyServerManager", "Released WakeLock and WifiLock.")
-        } catch (e: Throwable) {
-            LogUtility.logError("ProxyServerManagerLocksRelease", e)
-        }
     }
 
     suspend fun rebootServer(newPort: Int) = withContext(Dispatchers.IO) {

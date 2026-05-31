@@ -26,7 +26,7 @@ class GatewayRepository(private val db: AppDatabase) {
     suspend fun getSettings(): ProxySetting {
         val current = db.proxySettingDao().getSettings() ?: ProxySetting()
         if (current.gatewayAuthToken.isEmpty()) {
-            val secureToken = "gateway_" + java.util.UUID.randomUUID().toString().take(8)
+            val secureToken = "gateway_" + java.util.UUID.randomUUID().toString().replace("-", "")
             val secured = current.copy(gatewayAuthToken = secureToken)
             db.proxySettingDao().insertOrUpdate(secured)
             return secured

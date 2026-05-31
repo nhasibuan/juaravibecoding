@@ -87,6 +87,7 @@ object GeminiCloudClient : InferenceEngine {
         } catch (e: Exception) {
             val errMsg = "Cloud dynamic inference error: ${e.message}"
             Log.e("GeminiCloudClient", errMsg, e)
+            com.example.server.LogUtility.logError("GeminiCloudClient", e)
             InferenceResult.Error.ExecutionError(errMsg)
         }
     }
@@ -180,6 +181,7 @@ object GeminiCloudClient : InferenceEngine {
         } catch (e: Exception) {
             val errMsg = "Cloud dynamic streaming inference error: ${e.message}"
             Log.e("GeminiCloudClient", errMsg, e)
+            com.example.server.LogUtility.logError("GeminiCloudClient", e)
             InferenceResult.Error.ExecutionError(errMsg)
         }
     }

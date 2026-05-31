@@ -18,6 +18,8 @@ android {
         versionCode = 1
         versionName = "1.0"
 
+        buildConfigField("boolean", "DEMO_MODE", "true")
+
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
             useSupportLibrary = true
