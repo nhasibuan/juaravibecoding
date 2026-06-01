@@ -217,7 +217,11 @@ class HttpGatewayServer(
                 } else if (!settings.geminiApiKey.isNullOrEmpty()) {
                     settings.geminiApiKey
                 } else {
-                    com.example.BuildConfig.GEMINI_API_KEY.orEmpty()
+                    if (com.example.BuildConfig.DEBUG) {
+                        com.example.BuildConfig.GEMINI_API_KEY.orEmpty()
+                    } else {
+                        ""
+                    }
                 }
 
                 if (isModels) {

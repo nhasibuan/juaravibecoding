@@ -51,14 +51,6 @@ object ModelDownloadManager {
     fun isModelDownloaded(context: Context, modelId: String): Boolean {
         try {
             val folder = context.getExternalFilesDir(null) ?: return false
-            if (com.example.BuildConfig.DEMO_MODE) {
-                val filename = getModelFilename(modelId)
-                val file = File(folder, filename)
-                if (file.exists() && file.length() > 0) {
-                    return true
-                }
-            }
-
             val manifestFile = File(folder, "verified_manifest.json")
             if (!manifestFile.exists()) {
                 return false
@@ -98,7 +90,7 @@ object ModelDownloadManager {
         }
     }
 
-    private fun markModelVerified(context: Context, modelId: String, sha256: String, sizeBytes: Long, status: String = "VERIFIED") {
+    fun markModelVerified(context: Context, modelId: String, sha256: String, sizeBytes: Long, status: String = "VERIFIED") {
         try {
             val folder = context.getExternalFilesDir(null) ?: return
             val manifestFile = File(folder, "verified_manifest.json")
@@ -120,6 +112,24 @@ object ModelDownloadManager {
         } catch (e: Exception) {
             Log.e(TAG, "Error writing verified manifest entry", e)
             com.example.server.LogUtility.logError("ModelDownloadManagerWriteManifest", e)
+        }
+    }
+
+    fun removeModelVerification(context: Context, modelId: String) {
+        try {
+            val folder = context.getExternalFilesDir(null) ?: return
+            val manifestFile = File(folder, "verified_manifest.json")
+            if (manifestFile.exists()) {
+                val json = JSONObject(manifestFile.readText())
+                if (json.has(modelId)) {
+                    json.remove(modelId)
+                    manifestFile.writeText(json.toString(2))
+                    Log.i(TAG, "Removed manifest entry for deleted model: $modelId")
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error removing verified manifest entry", e)
+            com.example.server.LogUtility.logError("ModelDownloadManagerRemoveManifest", e)
         }
     }
 

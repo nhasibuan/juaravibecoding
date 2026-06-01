@@ -1195,6 +1195,23 @@ fun LocalModelCard(
                         ) {
                             Text(text = "${model.sizeGb} GB", color = GhostText, fontSize = 9.sp)
                         }
+                        if (isDownloaded && com.example.BuildConfig.DEMO_MODE) {
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(4.dp))
+                                    .background(NeonCyan.copy(alpha = 0.15f))
+                                    .border(1.dp, NeonCyan, RoundedCornerShape(4.dp))
+                                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                            ) {
+                                Text(
+                                    text = "SIMULATED",
+                                    fontSize = 8.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = NeonCyan
+                                )
+                            }
+                        }
                     }
                     Text(text = model.description, color = GhostText, fontSize = 11.sp, lineHeight = 15.sp)
                 }

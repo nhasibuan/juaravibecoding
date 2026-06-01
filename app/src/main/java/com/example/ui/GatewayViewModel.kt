@@ -51,6 +51,23 @@ class GatewayViewModel(application: Application) : AndroidViewModel(application)
         // Sync local downloaded models state based on physical file presence
         refreshDownloadedModels()
 
+        // Sync download progresses with Room table (for WorkManager compatibility)
+        viewModelScope.launch {
+            repository.downloadStatesFlow.collect { states ->
+                val progresses = states.associate { state ->
+                    val progressValue = when (state.status) {
+                        "DOWNLOADING" -> state.progress
+                        "VERIFYING" -> 99
+                        "INITIALIZING" -> 0
+                        else -> -1
+                    }
+                    state.modelId to progressValue
+                }.filter { it.value >= 0 }
+                _downloadProgresses.update { progresses }
+                refreshDownloadedModels()
+            }
+        }
+
         // Standard setup: start proxy on port defined in database (fallback to 8080)
         viewModelScope.launch {
             try {
@@ -262,12 +279,39 @@ class GatewayViewModel(application: Application) : AndroidViewModel(application)
                                 android.util.Log.e("GatewayViewModel", "Failed to write placeholder Gemma 3", e)
                             }
                         }
+                        if (demoGemma3File.exists()) {
+                            try {
+                                com.example.inference.ModelDownloadManager.markModelVerified(
+                                    getApplication(),
+                                    "litert-community/Gemma3-1B-IT",
+                                    "placeholder-hash",
+                                    demoGemma3File.length(),
+                                    "VERIFIED"
+                                )
+                            } catch (e: Exception) {
+                                android.util.Log.e("GatewayViewModel", "Failed to mark placeholder Gemma 3 verified", e)
+                            }
+                        }
+
                         val demoGemma4File = java.io.File(folder, "gemma4_2b_v09_obfus_fix_all_modalities_thinking.litertlm")
                         if (!demoGemma4File.exists()) {
                             try {
                                 demoGemma4File.writeText("Placeholder local weights for Gemma 4 2B IT (Obfuscated Fix)")
                             } catch (e: Exception) {
                                 android.util.Log.e("GatewayViewModel", "Failed to write placeholder Gemma 4", e)
+                            }
+                        }
+                        if (demoGemma4File.exists()) {
+                            try {
+                                com.example.inference.ModelDownloadManager.markModelVerified(
+                                    getApplication(),
+                                    "litert-community/gemma-4-E2B-it-litert-lm",
+                                    "placeholder-hash",
+                                    demoGemma4File.length(),
+                                    "VERIFIED"
+                                )
+                            } catch (e: Exception) {
+                                android.util.Log.e("GatewayViewModel", "Failed to mark placeholder Gemma 4 verified", e)
                             }
                         }
                     }
@@ -287,71 +331,64 @@ class GatewayViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun triggerModelDownload(modelId: String) {
-        if (downloadJobs.containsKey(modelId)) {
-            // Cancel downloading if clicked again (toggle behavior)
-            downloadJobs[modelId]?.cancel()
-            downloadJobs.remove(modelId)
-            _downloadProgresses.update { it.toMutableMap().apply { remove(modelId) } }
-            viewModelScope.launch {
-                repository.updateDownloadState(ModelDownloadState(modelId = modelId, progress = 0, status = "PAUSED"))
-            }
-            return
-        }
-
-        val job = viewModelScope.launch {
+        viewModelScope.launch {
             try {
-                com.example.inference.ModelDownloadManager.downloadModel(getApplication(), modelId).collect { state ->
-                    when (state) {
-                        is com.example.inference.DownloadState.Initializing -> {
-                            _downloadProgresses.update { it.toMutableMap().apply { put(modelId, 0) } }
-                            repository.updateDownloadState(ModelDownloadState(modelId = modelId, progress = 0, status = "INITIALIZING"))
-                        }
-                        is com.example.inference.DownloadState.Progress -> {
-                            _downloadProgresses.update { it.toMutableMap().apply { put(modelId, state.percent) } }
-                            repository.updateDownloadState(ModelDownloadState(
-                                modelId = modelId,
-                                progress = state.percent,
-                                status = "DOWNLOADING",
-                                downloadedBytes = state.downloadedBytes,
-                                totalBytes = state.totalBytes
-                            ))
-                        }
-                        is com.example.inference.DownloadState.Verifying -> {
-                            _downloadProgresses.update { it.toMutableMap().apply { put(modelId, 99) } }
-                            repository.updateDownloadState(ModelDownloadState(modelId = modelId, progress = 99, status = "VERIFYING"))
-                        }
-                        is com.example.inference.DownloadState.Completed -> {
-                            _downloadProgresses.update { it.toMutableMap().apply { remove(modelId) } }
-                            repository.updateDownloadState(ModelDownloadState(modelId = modelId, progress = 100, status = "COMPLETED"))
-                            refreshDownloadedModels()
-                        }
-                        is com.example.inference.DownloadState.Error -> {
-                            Log.e("GatewayViewModel", "Download error: ${state.message}")
-                            _downloadProgresses.update { it.toMutableMap().apply { remove(modelId) } }
-                            repository.updateDownloadState(ModelDownloadState(modelId = modelId, progress = 0, status = "FAILED", errorMessage = state.message))
-                            refreshDownloadedModels()
-                        }
+                val dbState = repository.getDownloadState(modelId)
+                val isDownloading = dbState != null && (
+                    dbState.status == "DOWNLOADING" || 
+                    dbState.status == "INITIALIZING" || 
+                    dbState.status == "VERIFYING"
+                )
+
+                if (isDownloading) {
+                    // Cancel/Pause downloading
+                    com.example.inference.ModelDownloadManager.requestCancel(modelId)
+                    try {
+                        androidx.work.WorkManager.getInstance(getApplication()).cancelUniqueWork("download_$modelId")
+                    } catch (e: Exception) {
+                        Log.e("GatewayViewModel", "Failed to cancel unique work download_$modelId", e)
                     }
+                    repository.updateDownloadState(ModelDownloadState(modelId = modelId, progress = 0, status = "PAUSED"))
+                    _downloadProgresses.update { it.toMutableMap().apply { remove(modelId) } }
+                } else {
+                    // Start downloading
+                    _downloadProgresses.update { it.toMutableMap().apply { put(modelId, 0) } }
+                    repository.updateDownloadState(ModelDownloadState(modelId = modelId, progress = 0, status = "INITIALIZING"))
+                    
+                    val workRequest = androidx.work.OneTimeWorkRequestBuilder<com.example.inference.ModelDownloadWorker>()
+                        .setInputData(androidx.work.workDataOf("modelId" to modelId))
+                        .addTag("download_$modelId")
+                        .build()
+                    
+                    androidx.work.WorkManager.getInstance(getApplication()).enqueueUniqueWork(
+                        "download_$modelId",
+                        androidx.work.ExistingWorkPolicy.REPLACE,
+                        workRequest
+                    )
                 }
             } catch (e: Exception) {
-                _downloadProgresses.update { it.toMutableMap().apply { remove(modelId) } }
-                repository.updateDownloadState(ModelDownloadState(modelId = modelId, progress = 0, status = "FAILED", errorMessage = e.localizedMessage))
-            } finally {
-                downloadJobs.remove(modelId)
+                Log.e("GatewayViewModel", "Error in triggerModelDownload for $modelId", e)
             }
         }
-        downloadJobs[modelId] = job
     }
 
     fun deleteModelWeight(modelId: String) {
-        downloadJobs[modelId]?.cancel()
-        downloadJobs.remove(modelId)
+        com.example.inference.ModelDownloadManager.requestCancel(modelId)
+        try {
+            androidx.work.WorkManager.getInstance(getApplication()).cancelUniqueWork("download_$modelId")
+        } catch (e: Exception) {
+            Log.e("GatewayViewModel", "Failed to cancel work on delete for $modelId", e)
+        }
         _downloadProgresses.update { it.toMutableMap().apply { remove(modelId) } }
 
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             try {
                 // Delete download state from Room
                 repository.deleteDownloadState(modelId)
+                
+                // Remove verification entry from manifest
+                com.example.inference.ModelDownloadManager.removeModelVerification(getApplication(), modelId)
+
                 // Remove actual physical file
                 val folder = getApplication<Application>().getExternalFilesDir(null)
                 if (folder != null) {

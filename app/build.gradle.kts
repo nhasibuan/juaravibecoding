@@ -90,6 +90,9 @@ dependencies {
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.okhttp)
     implementation(libs.okhttp.logging)
+    
+    // MediaPipe LLM Inference
+    implementation(libs.mediapipe.tasks.genai)
 
     // Tooling
     debugImplementation(libs.androidx.compose.ui.tooling)

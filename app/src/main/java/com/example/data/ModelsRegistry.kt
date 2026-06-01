@@ -30,8 +30,8 @@ object ModelsRegistry {
             downloadUrl = ""
         ),
         ModelInfo(
-            id = "gemini-3.1-pro-preview",
-            name = "Gemini 3.1 Pro (Preview)",
+            id = "gemini-1.5-pro",
+            name = "Gemini 1.5 Pro",
             description = "Premier model for complex reasoning, multi-turn dialogue, and coding tasks",
             sizeGb = 0.0,
             backend = ModelBackend.CLOUD,

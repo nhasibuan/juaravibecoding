@@ -33,7 +33,13 @@ object GeminiCloudClient : InferenceEngine {
         params: InferenceParams
     ): InferenceResult = withContext(Dispatchers.IO) {
         val startTime = System.currentTimeMillis()
-        val apiKey = params.apiKey.ifEmpty { com.example.BuildConfig.GEMINI_API_KEY.orEmpty() }
+        val apiKey = params.apiKey.ifEmpty {
+            if (com.example.BuildConfig.DEBUG) {
+                com.example.BuildConfig.GEMINI_API_KEY.orEmpty()
+            } else {
+                ""
+            }
+        }
         
         if (apiKey.isEmpty() || apiKey.startsWith("YOUR_GEMINI_API_KEY")) {
             return@withContext InferenceResult.Error.Unauthorized(
@@ -100,7 +106,13 @@ object GeminiCloudClient : InferenceEngine {
         onChunk: suspend (String) -> Unit
     ): InferenceResult = withContext(Dispatchers.IO) {
         val startTime = System.currentTimeMillis()
-        val apiKey = params.apiKey.ifEmpty { com.example.BuildConfig.GEMINI_API_KEY.orEmpty() }
+        val apiKey = params.apiKey.ifEmpty {
+            if (com.example.BuildConfig.DEBUG) {
+                com.example.BuildConfig.GEMINI_API_KEY.orEmpty()
+            } else {
+                ""
+            }
+        }
 
         if (apiKey.isEmpty() || apiKey.startsWith("YOUR_GEMINI_API_KEY")) {
             return@withContext InferenceResult.Error.Unauthorized(
@@ -189,6 +201,7 @@ object GeminiCloudClient : InferenceEngine {
     private fun buildGeminiPayload(prompt: String, params: InferenceParams): JSONObject {
         val payload = JSONObject()
         val contentsArray = JSONArray()
+        val systemInstructionBuilder = StringBuilder()
 
         if (prompt.trim().startsWith("[") && prompt.trim().endsWith("]")) {
             try {
@@ -198,11 +211,18 @@ object GeminiCloudClient : InferenceEngine {
                     val role = msgItem.optString("role", "user")
                     val content = msgItem.optString("content", "")
 
-                    val gRole = if (role.equals("assistant", ignoreCase = true)) "model" else "user"
-                    contentsArray.put(JSONObject().apply {
-                        put("role", gRole)
-                        put("parts", JSONArray().put(JSONObject().put("text", content)))
-                    })
+                    if (role.equals("system", ignoreCase = true)) {
+                        if (systemInstructionBuilder.isNotEmpty()) {
+                            systemInstructionBuilder.append("\n")
+                        }
+                        systemInstructionBuilder.append(content)
+                    } else {
+                        val gRole = if (role.equals("assistant", ignoreCase = true)) "model" else "user"
+                        contentsArray.put(JSONObject().apply {
+                            put("role", gRole)
+                            put("parts", JSONArray().put(JSONObject().put("text", content)))
+                        })
+                    }
                 }
             } catch (e: Exception) {
                 contentsArray.put(JSONObject().apply {
@@ -218,6 +238,13 @@ object GeminiCloudClient : InferenceEngine {
         }
 
         payload.put("contents", contentsArray)
+
+        if (systemInstructionBuilder.isNotEmpty()) {
+            val systemInstructionObj = JSONObject().apply {
+                put("parts", JSONArray().put(JSONObject().put("text", systemInstructionBuilder.toString())))
+            }
+            payload.put("systemInstruction", systemInstructionObj)
+        }
 
         payload.put("generationConfig", JSONObject().apply {
             put("temperature", params.temperature)

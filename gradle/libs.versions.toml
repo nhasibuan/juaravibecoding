@@ -37,6 +37,9 @@ androidx-work = { group = "androidx.work", name = "work-runtime-ktx", version.re
 okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhttp" }
 okhttp-logging = { group = "com.squareup.okhttp3", name = "logging-interceptor", version.ref = "okhttp" }
 
+# MediaPipe LLM Inference
+mediapipe-tasks-genai = { group = "com.google.mediapipe", name = "tasks-genai", version = "0.10.14" }
+
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
 kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }

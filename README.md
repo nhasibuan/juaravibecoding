@@ -35,38 +35,52 @@ The purpose of Juaravibecoding is to bridge the gap between heavy cloud-dependen
 - **Hardware Co-Processor Acceleration Configurator (UI/Playground Mode)**: Displays and toggles configurations (NPU Cores acceleration vs. GPU Driver bypass) for on-device hardware pipelines as interactive prototype controls.
 - **Cosmic Dark Design UI Interface**: Crafted under Material Design 3 guidelines using beautiful typography pairing, cohesive spacing grids, and high-visibility live status tracers.
 
----
-
 ## 2. Architectural Blueprint
 
 ### **Data Dictionary (Local Room SQL Schemas)**
 
 #### Table Name: `proxy_settings`
-This table persists systemic gateway configurations and local device environment drivers.
+This table persists global gateway configurations, security credentials, and active server behavior switches.
 
 | SQLite Column Name | Kotlin Class Variable Type | Description / Constraints |
 | :--- | :--- | :--- |
 | `id` | `Int` (Primary Key, Default: `1`) | Enforces a Single-Row constraint for global system configurations. |
 | `port` | `Int` (Default: `8080`) | The listening socket address for incoming HTTP requests. |
-| `geminiApiKey` | `String` (Default: `""`) | Optional base-64 or plain API key override for Google AI Studio cloud requests. |
+| `geminiApiKey` | `String` (Default: `""`) | Encrypted override API key for Google AI Studio cloud requests. |
 | `enableNpuBackend` | `Boolean` (Default: `false`) | Toggles the use of Neural processing specialized SDKs during execution. |
 | `bypassGpu` | `Boolean` (Default: `true`) | Standard GPU driver fallback bypass to enforce robust CPU instructions on complex architectures. |
+| `gatewayAuthToken`| `String` (Default: `""`) | Encrypted, secure bearer token used to authenticate local API gateway requests. |
+| `preferredBackend`| `String` (Default: `"AUTO"`) | Specifies the routing preference for local inference engines (e.g., `AUTO`, `CPU`, `GPU`, `NPU`). |
+| `exposeToLan`     | `Boolean` (Default: `false`) | Toggles socket binding between loopback-only (`127.0.0.1`) and LAN interface wildcard (`0.0.0.0`). |
 
 #### Table Name: `gateway_logs`
-Tracks transactional requests made to the server, assisting debugging, analysis, and latency tracing.
+Tracks transactional requests made to the server, assisting debugging, analysis, and latency/token tracing.
 
 | SQLite Column Name | Kotlin Class Variable Type | Description / Constraints |
 | :--- | :--- | :--- |
 | `id` | `Long` (Primary Key, Auto-Generate) | Unique sequential ID assigned to every network transition. |
 | `timestamp` | `Long` (Default: Unix epoch MS) | Precise time indicating when the incoming socket connection was opened. |
-| `method` | `String` | Http Method of the request (`GET`, `POST`, `OPTIONS`). |
-| `endpoint` | `String` | Request path requested (e.g., `/v1/chat/completions`). |
-| `requestSnippet` | `String` (Default: `""`) | Visual trim of the JSON request payload containing inputs and system configurations. |
-| `responseSnippet` | `String` (Default: `""`) | Visual trim of the generated completions response payload. |
-| `statusCode` | `Int` | Handled HTTP response status (e.g., `200` OK, `404` Not Found, `500` Error). |
+| `method` | `String?` | Http Method of the request (`GET`, `POST`, `OPTIONS`). |
+| `endpoint` | `String?` | Request path requested (e.g., `/v1/chat/completions`). |
+| `requestSnippet` | `String?` (Default: `null`) | Visual trim of the JSON request payload containing inputs and system configurations. |
+| `responseSnippet` | `String?` (Default: `null`) | Visual trim of the generated completions response payload. |
+| `statusCode` | `Int` | Handled HTTP response status (e.g., `200` OK, `401` Unauthorized, `500` Error). |
 | `latencyMs` | `Long` | Complete handling duration from socket read to socket stream flush. |
-| `modelUsed` | `String` | System identifier of the model routed for the completions task. |
+| `modelUsed` | `String?` | System identifier of the model routed for the completions task. |
 | `errorMessage` | `String?` (Default: `null`) | Stores detailed exception messages or routing errors where applicable. |
+| `tokensCount` | `Int` (Default: `0`) | Evaluated token footprint for request and response context. |
+
+#### Table Name: `model_download_states`
+Maintains individual model weight initialization, range-resume offsets, and checksum status verification.
+
+| SQLite Column Name | Kotlin Class Variable Type | Description / Constraints |
+| :--- | :--- | :--- |
+| `modelId` | `String` (Primary Key) | Standard slug matching the target model in `ModelsRegistry`. |
+| `progress` | `Int` (Default: `0`) | Current percentage download progression (0 to 100). |
+| `status` | `String` (Default: `"NOT_STARTED"`) | Active lifecycle status (`NOT_STARTED`, `DOWNLOADING`, `PAUSED`, `VERIFYING`, `COMPLETED`, `FAILED`). |
+| `downloadedBytes` | `Long` (Default: `0`) | Number of bytes correctly retrieved and stored on disk. |
+| `totalBytes` | `Long` (Default: `0`) | Expected file payload footprint derived from the download headers. |
+| `errorMessage` | `String?` (Default: `null`) | Captured string of download or checksum error exceptions. |
 
 ---
 
@@ -75,41 +89,50 @@ Tracks transactional requests made to the server, assisting debugging, analysis,
 The Juaravibecoding source codebase is structured logically to maintain a strict separation of concerns, operating cleanly across data boundaries, state controllers, and rendering components:
 
 ```
-┌───────────────────────────────────────────────────────────┐
-│                    MainActivity.kt                        │
-└─────────────────────────────┬─────────────────────────────┘
-                              ▼
-┌───────────────────────────────────────────────────────────┐
-│                    GatewayScreen.kt                       │
-└─────────────────────────────*─────────────────────────────┘
-                              │ Uses UI interactions
-                              ▼
-┌───────────────────────────────────────────────────────────┐
-│                    GatewayViewModel.kt                    │
-└─────────────────────────────┬─────────────────────────────┘
-       Observes Flows         │ Commands settings operations
-                              ▼
-┌───────────────────────────────────────────────────────────┐
-│                    GatewayRepository.kt                   │
-└────┬────────────────────────┬────────────────────────┬────┘
-     │ Persists Configs       │ Traces logs            │ Feeds server logic
-     ▼                        ▼                        ▼
-┌──────────────┐       ┌──────────────┐       ┌─────────────────┐
-│Room Settings │       │ Room Database│       │ProxyServer-     │
-│DAO           │       │ Logs DAO     │       │Manager          │
-└──────────────┘       └──────────────┘       └────────┬────────┘
-                                                       │
-                                                       ▼ Handles translation
-                                              ┌─────────────────┐
-                                              │OpenAiToGemini-  │
-                                              │Translator       │
-                                              └────────┬────────┘
-                                                       ├────────────────────────┐
-                                                       ▼ Cloud Routing          ▼ Local Routing
-                                              ┌─────────────────┐      ┌─────────────────┐
-                                              │Google AI Studio │      │LiteRtLmEngine   │
-                                              │REST Endpoints   │      │(On-Device GPU)  │
-                                              └─────────────────┘      └─────────────────┘
+                                        +---------------------------------------+
+                                        |             MainActivity              |
+                                        +-------------------+-------------------+
+                                                            |
+                                                            v Uses (Triggers / Observes)
+                                        +-------------------+-------------------+
+                                        |          GatewayViewModel             |
+                                        +---------+-------------------+---------+
+                                                  |                   |
+                                    Observes Flow |                   | Launches / Binds
+                                                  v                   v
++-----------------------+               +---------+---------+   +-----+-----------------+
+|   GatewayRepository   |<--------------+   GatewayScreen   |   |   GatewayForeground   |
++-----------+-----------+               +-------------------+   |        Service        |
+            |                                                   +-----------+-----------+
+            | Reads/Writes                                                  | Runs / Manages
+            v                                                               v
++-----------+-----------+                                       +-----------+-----------+
+|     AppDatabase       |                                       |   ProxyServerManager  |
+| - proxy_settings      |                                       +-----------+-----------+
+| - gateway_logs        |                                                   |
+| - model_down_states   |                                                   v Start / Stop
++-----------------------+                                       +-----------+-----------+
+                                                                |   HttpGatewayServer   |
+                                                                +-----------+-----------+
+                                                                            |
+                                                                            v Receives HTTP Requests
+                                                                +-----------+-----------+
+                                                                |      ModelRouter      |
+                                                                +-----+-----------+-----+
+                                                                      |           |
+                                                       Local Inference|           | Cloud Proxy
+                                                                      v           v
+                                                  +-------------------+---+   +---+-------------------+
+                                                  |    LiteRtLmEngine     |   |   GeminiCloudClient   |
+                                                  |   (Simulated/Real *   |   |    (Real REST SSE     |
+                                                  |   with fallback)      |   |       via OkHttp)     |
+                                                  +-----------+-----------+   +-----------------------+
+                                                              |
+                                                              v Loads weights & validates
+                                                  +-----------+-----------+
+                                                  |  ModelDownloadManager |
+                                                  | (OkHttp Resume, SHA)  |
+                                                  +-----------------------+
 ```
 
 #### **1. UI and State Components**
@@ -125,24 +148,39 @@ The Juaravibecoding source codebase is structured logically to maintain a strict
 
 #### **2. Persistent Storage and Entities**
 *   **`GatewayRepository.kt`**
-    *   **Used For**: Mediates data access abstractions, wrapping transactional DB updates, cache clears, configuration overrides, and log records creation.
-    *   **Used By**: `GatewayViewModel.kt` and `ProxyServerManager.kt`.
-*   **`ProxySettingDao.kt` & `GatewayLogDao.kt`**
-    *   **Used For**: Room interfaces compiled into detailed SQL instructions executing reads, inserts, and counts.
+    *   **Used For**: Mediates data access abstractions, wrapping transactional DB updates, cache clears, configuration overrides, cryptographic encryption/decryption, and log records creation.
+    *   **Used By**: `GatewayViewModel.kt`, `HttpGatewayServer.kt`, and `GatewayForegroundService.kt`.
+*   **`ProxySettingDao.kt`, `GatewayLogDao.kt` & `ModelDownloadStateDao.kt`**
+    *   **Used For**: Room interfaces compiled into detailed SQL instructions executing reads, inserts, deletions, and counts.
     *   **Used By**: `GatewayRepository` database implementations.
 
 #### **3. Server and Middleware Components**
+*   **`GatewayForegroundService.kt`**
+    *   **Used For**: Runs an Android Background Service utilizing a persistent Notification to shield the server process from OS reclamation, managing system resources like `WifiLock`.
+    *   **Used By**: `GatewayViewModel.kt` via service start intents.
 *   **`ProxyServerManager.kt`**
-    *   **Used For**: Spawns a background `ServerSocket` stream receiver. Intercepts incoming network connections, handles CORS and keep-alive requests, parses OpenAI formats, and streams parsed responses.
-    *   **Used By**: `GatewayViewModel` to start or shut down servers.
+    *   **Used For**: Handles full lifecycle coordination of the HTTP routing process, managing active server port configurations.
+    *   **Used By**: `GatewayForegroundService.kt` to safely activate or terminate network pipelines.
+*   **`HttpGatewayServer.kt`**
+    *   **Used For**: Spawns a background socket stream listener. Intercepts incoming TCP connections, parses HTTP methods, manages CORS/headers, validates Bearer tokens, limits sizes/timeouts, handles keep-alive connections, and maps request payloads.
+    *   **Used By**: `ProxyServerManager.kt`.
 *   **`OpenAiToGeminiTranslator.kt`**
-    *   **Used For**: Normalizes incoming parameters (e.g., `messages`, `temperature`, `max_tokens`) to map onto Gemini standard payloads.
-    *   **Used By**: `ProxyServerManager.kt` during payload transformation tasks.
+    *   **Used For**: Translates incoming standard OpenAI `/v1/chat/completions` input payloads into equivalent Google Gemini API parameters, and maps downstream stream packets back to OpenAI specifications.
+    *   **Used By**: `HttpGatewayServer.kt`.
+*   **`ModelRouter.kt`**
+    *   **Used For**: Analyzes input model requests and matches them dynamically to either cloud providers or the appropriate on-device inference engines.
+    *   **Used By**: `HttpGatewayServer.kt`.
 
-#### **4. Deep Inference Cores**
-*   **`LiteRtLmEngine.kt`**
-    *   **Used For**: Integrates custom local hardware wrappers to coordinate localized inference loads using Google LiteRT SDKs without pinging external API grids.
-    *   **Used By**: `ProxyServerManager.kt` for local model requests.
+#### **4. Inference & Downloader Cores**
+*   **`GeminiCloudClient.kt`**
+    *   **Used For**: Assembles server-bound requests, manages system prompts, signs payloads with API keys, forwards JSON blocks to Google AI Studio cloud endpoints, and parses incoming Server-Sent Events (SSE) chunks on the stream.
+    *   **Used By**: `HttpGatewayServer.kt`.
+*   **`LiteRtLmEngine.kt` & `AiCoreEngine.kt`**
+    *   **Used For**: Low-latency localized processing. Translates local parameters and interfaces with on-device AI runtimes.
+    *   **Used By**: `HttpGatewayServer.kt`.
+*   **`ModelDownloadManager.kt`**
+    *   **Used For**: Pulls remote weights via chunked `Range` headers for resumption, calculates SHA-256 verifications, and writes a global metadata manifest.
+    *   **Used By**: `GatewayViewModel.kt`.
 
 ---
 

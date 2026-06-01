@@ -50,7 +50,7 @@ object ModelRouter {
             return "gemini-3.5-flash"
         }
         if (normalized.contains("gpt-4") || normalized.contains("claude-3")) {
-            return "gemini-3.1-pro-preview"
+            return "gemini-1.5-pro"
         }
         
         // Backward-compatible mappings for legacy/nonexistent model designations
@@ -84,8 +84,8 @@ object ModelRouter {
         if (normalized == "gemini-3.5-flash" || normalized.contains("3.5-flash")) {
             return "gemini-3.5-flash"
         }
-        if (normalized == "gemini-3.1-pro-preview" || normalized.contains("3.1-pro") || normalized.contains("3.1")) {
-            return "gemini-3.1-pro-preview"
+        if (normalized == "gemini-1.5-pro" || normalized == "gemini-3.1-pro-preview" || normalized.contains("1.5-pro") || normalized.contains("3.1-pro") || normalized.contains("3.1")) {
+            return "gemini-1.5-pro"
         }
         return modelId
     }
