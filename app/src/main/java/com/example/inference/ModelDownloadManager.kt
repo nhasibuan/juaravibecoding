@@ -30,6 +30,32 @@ object ModelDownloadManager {
         "litert-community/gemma-4-E2B-it-litert-lm" to "a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7"
     )
 
+    fun getDeviceRamGb(context: Context): Double {
+        return try {
+            val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as? android.app.ActivityManager
+            if (activityManager != null) {
+                val memoryInfo = android.app.ActivityManager.MemoryInfo()
+                activityManager.getMemoryInfo(memoryInfo)
+                memoryInfo.totalMem.toDouble() / (1024.0 * 1024.0 * 1024.0)
+            } else {
+                4.0 // Fallback estimate
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error checking device RAM", e)
+            4.0
+        }
+    }
+
+    fun getRecommendedModel(context: Context): String {
+        val ram = getDeviceRamGb(context)
+        Log.i(TAG, "getRecommendedModel: Device RAM is %.2f GB".format(ram))
+        return if (ram < 3.0) {
+            "litert-community/Gemma3-1B-IT"
+        } else {
+            "litert-community/gemma-4-E2B-it-litert-lm"
+        }
+    }
+
     private val cancelledModels = mutableSetOf<String>()
     private val pausedModels = mutableSetOf<String>()
 

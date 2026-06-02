@@ -71,43 +71,37 @@ object LiteRtLmEngine : InferenceEngine {
         return "Local GPU (Dynamic Acceleration Fallback)"
     }
 
-    private fun getOrLoadModel(context: Context, modelId: String, params: InferenceParams): LlmInference? {
-        if (llmInference != null && currentModelId == modelId) {
-            return llmInference
+    private suspend fun getAndRunScopedInference(
+        context: Context,
+        modelId: String,
+        prompt: String,
+        params: InferenceParams,
+        onChunk: (suspend (String) -> Unit)? = null
+    ): String? {
+        val folder = context.getExternalFilesDir(null) ?: return null
+        val filename = getModelFilename(modelId)
+        val file = File(folder, filename)
+        if (!file.exists() || file.length() < 100000) {
+            Log.i(TAG, "Model weight file does not exist or is too small (placeholder). Using simulated backup engine.")
+            return null
         }
         
-        close()
-        
-        try {
-            val folder = context.getExternalFilesDir(null) ?: return null
-            val filename = getModelFilename(modelId)
-            val file = File(folder, filename)
-            if (!file.exists() || file.length() < 100000) { // Keep dummy files below 100KB using simulation fallback
-                Log.i(TAG, "Model weight file does not exist or is too small (placeholder). Using simulated inference engine.")
-                return null
-            }
-            
-            Log.i(TAG, "Initializing real LlmInference with file: ${file.absolutePath}")
-            val builder = LlmInference.LlmInferenceOptions.builder()
-                .setModelPath(file.absolutePath)
-                .setTemperature(params.temperature)
-                .setTopK(params.topK)
-                
-            builder.setResultListener { partialResult: String, isDone: Boolean ->
-                activeChunkCallback?.invoke(partialResult)
-                if (isDone) {
-                    streamingCompletion?.invoke()
+        return try {
+            if (onChunk != null) {
+                var fullResponse = ""
+                LiteRtLmRepository.getInstance().sendMessageStream(context, modelId, prompt, params).collect { token ->
+                    onChunk(token)
+                    fullResponse += token
+                }
+                fullResponse
+            } else {
+                LiteRtLmRepository.getInstance().useScopedConversation(context, modelId, params) { wrapper ->
+                    wrapper.generate(prompt)
                 }
             }
-            
-            val inference = LlmInference.createFromOptions(context, builder.build())
-            llmInference = inference
-            currentModelId = modelId
-            Log.i(TAG, "Successfully pre-loaded real LlmInference model weights: $modelId")
-            return inference
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to load real LlmInference, reverting to simulated engine", e)
-            return null
+            Log.e(TAG, "Error executing scoped inference via repository, reverting to simulation", e)
+            null
         }
     }
 
@@ -129,27 +123,19 @@ object LiteRtLmEngine : InferenceEngine {
         isLoaded = true
         activeBackendName = resolveBackend(params)
         
-        val inference = getOrLoadModel(context, modelId, params)
-        if (inference != null) {
-            try {
-                Log.i(TAG, "Executing real LlmInference blocking generation")
-                val responseText = withContext(Dispatchers.IO) {
-                    inference.generateResponse(prompt)
-                }
-                val latency = System.currentTimeMillis() - startTime
-                val tokensBytes = responseText.split("\\s+".toRegex()).size + 7
-                isKvCacheReused = true
-                
-                return InferenceResult.Success(
-                    text = responseText,
-                    tokensGenerated = tokensBytes,
-                    latencyMs = latency,
-                    modelUsed = modelId,
-                    backend = activeBackendName
-                )
-            } catch (e: Exception) {
-                Log.e(TAG, "Error executing real LlmInference generation, falling back to simulation", e)
-            }
+        val realResponse = getAndRunScopedInference(context, modelId, prompt, params, null)
+        if (realResponse != null) {
+            val latency = System.currentTimeMillis() - startTime
+            val tokensCount = realResponse.split("\\s+".toRegex()).size + 7
+            isKvCacheReused = true
+            
+            return InferenceResult.Success(
+                text = realResponse,
+                tokensGenerated = tokensCount,
+                latencyMs = latency,
+                modelUsed = modelId,
+                backend = activeBackendName
+            )
         }
         
         // Simulated backup pipeline
@@ -187,47 +173,19 @@ object LiteRtLmEngine : InferenceEngine {
         isLoaded = true
         activeBackendName = resolveBackend(params)
         
-        val inference = getOrLoadModel(context, modelId, params)
-        if (inference != null) {
-            val channel = kotlinx.coroutines.channels.Channel<String>(kotlinx.coroutines.channels.Channel.UNLIMITED)
-            activeChunkCallback = { chunk ->
-                channel.trySend(chunk)
-            }
-            streamingCompletion = {
-                channel.close()
-            }
+        val realResponse = getAndRunScopedInference(context, modelId, prompt, params, onChunk)
+        if (realResponse != null) {
+            val latency = System.currentTimeMillis() - startTime
+            val tokensCount = realResponse.split("\\s+".toRegex()).size + 7
+            isKvCacheReused = true
             
-            try {
-                Log.i(TAG, "Executing real LlmInference async streaming sequence")
-                withContext(Dispatchers.IO) {
-                    inference.generateResponseAsync(prompt)
-                }
-                
-                val fullResponse = StringBuilder()
-                for (chunk in channel) {
-                    onChunk(chunk)
-                    fullResponse.append(chunk)
-                }
-                
-                val latency = System.currentTimeMillis() - startTime
-                val tokensBytes = fullResponse.toString().split("\\s+".toRegex()).size + 7
-                isKvCacheReused = true
-                
-                return InferenceResult.Success(
-                    text = fullResponse.toString(),
-                    tokensGenerated = tokensBytes,
-                    latencyMs = latency,
-                    modelUsed = modelId,
-                    backend = activeBackendName
-                )
-            } catch (e: Exception) {
-                Log.e(TAG, "Error executing real LlmInference async streaming, falling back", e)
-                channel.close()
-                // Proceed to simulated flow
-            } finally {
-                activeChunkCallback = null
-                streamingCompletion = null
-            }
+            return InferenceResult.Success(
+                text = realResponse,
+                tokensGenerated = tokensCount,
+                latencyMs = latency,
+                modelUsed = modelId,
+                backend = activeBackendName
+            )
         }
         
         // Simulated backup streaming pipeline

@@ -1020,6 +1020,61 @@ fun ModelsAndLogsTab(
                         modifier = Modifier.padding(vertical = 4.dp)
                     )
                 }
+
+                item {
+                    val context = LocalContext.current
+                    val systemRam = remember { com.example.inference.ModelDownloadManager.getDeviceRamGb(context) }
+                    val isLowRam = systemRam < 3.0
+                    val recommendedName = if (isLowRam) "Gemma3-1B-IT" else "Gemma 4 E2B"
+                    
+                    Card(
+                        shape = RoundedCornerShape(12.dp),
+                        colors = CardDefaults.cardColors(containerColor = MetallicTeal),
+                        border = BorderStroke(1.dp, NeonCyan.copy(alpha = 0.4f)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp)
+                    ) {
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.Default.Info,
+                                    contentDescription = "RAM hardware info icon",
+                                    tint = NeonCyan,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = "System Capability Profiler",
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White
+                                )
+                                Spacer(modifier = Modifier.weight(1f))
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(4.dp))
+                                        .background(NeonCyan.copy(alpha = 0.15f))
+                                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                                ) {
+                                    Text(
+                                        text = "%.2f GB RAM".format(systemRam),
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = NeonCyan
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                text = "Based on your phone's memory configuration, we highly recommend deploying our high-performance offline on-device model: $recommendedName.",
+                                fontSize = 11.sp,
+                                color = GhostText,
+                                lineHeight = 15.sp
+                            )
+                        }
+                    }
+                }
                 
                 items(ModelsRegistry.localModels) { model ->
                     LocalModelCard(

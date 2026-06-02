@@ -19,6 +19,9 @@
         android:theme="@style/Theme.AiProxyGateway"
         android:networkSecurityConfig="@xml/network_security_config">
 
+        <uses-native-library android:name="libvndksupport.so" android:required="false" />
+        <uses-native-library android:name="libOpenCL.so" android:required="false" />
+
         <service
             android:name=".server.GatewayForegroundService"
             android:foregroundServiceType="specialUse|dataSync"
