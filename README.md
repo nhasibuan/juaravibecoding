@@ -224,7 +224,7 @@ Ready to get your localized AI gateway server running? Follow these detailed ins
 4. Press **Apply Override**. A conformation notification informs you that your variables are updated and saved securely locally.
 
 ### **Step 4: Connect Your Computer or IDE to the Local Server**
-To route completions queries from development tools running on a computer (such as the **Cursor IDE** or custom **Python scripts**) direct to your Android phone, you need to bridge your laptop network with your phone's port using **Android Debug Bridge (ADB)**.
+To route completions queries from development tools running on a computer (such as the **cURL** or custom **Python scripts**) direct to your Android phone, you need to bridge your laptop network with your phone's port using **Android Debug Bridge (ADB)**.
 
 #### **Prerequisites**
 - Install Android platform-tools (ADB commands) on your computer.
@@ -243,9 +243,9 @@ adb reverse tcp:8080 tcp:8080
 
 #### **How to Configure External Tools**
 
-##### **1. Curl Setup**
+##### **1. cURL Setup**
 ```bash
-curl -X POST http://127.0.0.1:8080/v1/ \
+curl -X POST http://localhost:8080/v1/ \
   -H "Content-Type: application/json" \
   -H "Authorization: a" \
   -d '{
